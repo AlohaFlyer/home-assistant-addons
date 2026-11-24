@@ -174,6 +174,11 @@ def _bcids(text):
     return [a or b for a, b in BCID_IN.findall(text or "")]
 
 
+def link_bcids(text):
+    """1.8.2: the BCIDs a link's href or onclick names (BCID=003.153, or a quoted '003.153'), in order."""
+    return _bcids(text)
+
+
 def _html_entries(soup):
     """(label, [bcid]) in page order: each <a> or onclick element (its text and title; BCIDs in href / onclick), each
     <option> whose value is a BCID, each other text node. Entities are decoded (&lt;16 reads <16)."""
@@ -328,6 +333,36 @@ def bcid_key(b):
 
 def bcid_after(b, mine):
     return bcid_key(b) > bcid_key(mine)
+
+
+def pot_month_check(html, month, slack_days=3):
+    """1.8.2 (D1): is this page the open time pot of the bid month `month` ('YYYY-MM')? classify() is the caller's.
+    {verdict, why, rows, dated, inside, other}: verdict 'not open' when it is no open time page; 'refused' when most
+    of its dated rows start outside the month (slack_days either side for a bid period's edges: November's runs
+    Nov 1 to Dec 1), other then names the month most of them start in; 'ok' when its rows start in the month;
+    'empty' when it has no dated row (an empty pot names no month)."""
+    out = {"verdict": "not open", "why": "not an open time page", "rows": 0, "dated": 0, "inside": 0, "other": ""}
+    if not is_pot_page(html or "", mobile=True):
+        return out
+    y, m = int(month[:4]), int(month[5:7])
+    first = date(y, m, 1)
+    last = (first + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+    lo, hi = first - timedelta(days=slack_days), last + timedelta(days=slack_days)
+    rows = parse_pot(html)
+    days = [d for d in (row_date(r.get("start"), today=date(y, m, 15)) for r in rows.values()) if d]
+    inside = [d for d in days if lo <= d <= hi]
+    out.update(rows=len(rows), dated=len(days), inside=len(inside))
+    if not days:
+        out.update(verdict="empty", why="an open time page with no dated trips")
+        return out
+    if 2 * len(inside) <= len(days):
+        outside = [f"{d.year:04d}-{d.month:02d}" for d in days if not lo <= d <= hi]
+        other = max(sorted(set(outside)), key=outside.count) if outside else ""
+        out.update(verdict="refused", other=other,
+                   why=f"{len(days) - len(inside)} of its {len(days)} trips start outside {month}")
+        return out
+    out.update(verdict="ok", why=f"{len(inside)} of its {len(days)} trips start in {month}")
+    return out
 
 
 def row_date(s, today=None):
@@ -699,13 +734,16 @@ SCHED_UPDATED = re.compile(r"Schedule Updated:\s*([A-Za-z]{3}\s+\d{1,2},\s*\d{4}
 def parse_schedule(html, domicile="HNL"):
     """Ryan's month schedule from the mobile schedule page. Returns None unless it looks like one.
     {'month': 'YYYY-MM', 'updated': 'Nov 1, 2026 09:54:34', 'days': [[iso, act, lay]],
-     'items': [{'trip','start','end','lay'}], 'totals': {...}}. act is '' on an empty day."""
+     'items': [{'trip','start','end','lay'}], 'totals': {...}}. act is '' on an empty day. 1.8.2 (P5): month is the
+    header's; the rows can start in the month before (December's carry-in rows Nov 30 and Dec 1, as on its Schedule
+    Lookup page) and run past the month's end."""
     soup = BeautifulSoup(html, "html.parser")
     text = soup.get_text(" ", strip=True)
     m = SCHED_MONTH.search(text)
     if not m:
         return None
     mon, yr = MON3.index(m.group(1)[:3].upper()) + 1, int(m.group(2))
+    hdr = f"{yr}-{mon:02d}"
     days, prev_dd = [], 0
     for tr in soup.find_all("tr"):
         cells = [c.get_text(" ", strip=True) for c in tr.find_all(["td", "th"], recursive=False)]
@@ -713,7 +751,11 @@ def parse_schedule(html, domicile="HNL"):
         if i is None or i + 2 >= len(cells) or not re.fullmatch(r"\d{1,2}", cells[i + 1]):
             continue
         dd = int(cells[i + 1])
-        if dd < prev_dd:  # rolled into the next month (trip ending after month end)
+        if not prev_dd and dd > 20:
+            # 1.8.2 (P5): a first row above the 20th is the month before (inflt.parse_cm_month's anchor): it was dated
+            # in the header's month, so Nov 30 read as Dec 30 and the whole line moved a month
+            mon, yr = (12, yr - 1) if mon == 1 else (mon - 1, yr)
+        elif dd < prev_dd:  # rolled into the next month (trip ending after month end)
             mon, yr = (1, yr + 1) if mon == 12 else (mon + 1, yr)
         prev_dd = dd
         rest = [c for c in cells[i + 2:]]
@@ -734,16 +776,14 @@ def parse_schedule(html, domicile="HNL"):
         if t:
             tot[key] = int(t.group(1)) if key == "days_off" else t.group(1)
     if "days_off" not in tot:  # the OT drop view has no totals; FLICA counts VAC days as off
-        y0, m0 = days[0][0][:4], days[0][0][5:7]
         work = set()
         for it in items:
             if PAIRING_RE.match(it["trip"]):
                 for d in _span(date.fromisoformat(it["start"]), date.fromisoformat(it["end"])):
                     work.add(d.isoformat())
-        tot["days_off"] = sum(1 for d in days if d[0][:7] == f"{y0}-{m0}" and d[0] not in work)
+        tot["days_off"] = sum(1 for d in days if d[0][:7] == hdr and d[0] not in work)  # 1.8.2 (P5): not a carry-in
     u = SCHED_UPDATED.search(text)
-    first = date.fromisoformat(days[0][0])
-    return {"month": f"{first.year}-{first.month:02d}", "updated": u.group(1) if u else "",
+    return {"month": hdr, "updated": u.group(1) if u else "",
             "days": days, "items": items, "totals": tot}
 
 
@@ -800,12 +840,15 @@ def _span(a, b):
 FREE_ITEMS = ("PAYP",)
 
 
-def fit_tag(start, end, sched):
+def fit_tag(start, end, sched, period=None):
     """'Fits', 'Conflict H3659', 'Check rest H3628', 'Days off 11' or '' when the schedule
     doesn't cover those dates. start/end are dates. Days off: 12 in a 30-day month, 13 in a
     31-day month (10.G). Rest next to a trip needs times the schedule page lacks, so it is flagged.
     1.7.2: a PAYP item is free for a pickup (PWA 4.R.1: a pilot may add a Flight Grouping on PAYP days and is paid
-    for both), never a Conflict; FLICA counts its days in Days Off, so a pickup on them uses days off as on any."""
+    for both), never a Conflict; FLICA counts its days in Days Off, so a pickup on them uses days off as on any.
+    1.8.2 (P4, S9): the month is the bid period (PWA 10.G.1.a and Definitions 47: November is Nov 1 to Dec 1, 31 days,
+    13 off; December Dec 2 to 31, 30 days, 12 off), as FLICA's Days Off total counts it: period is its (first, last)
+    day (ISO), and only the pickup's days inside it count; without it the calendar month of sched['month']."""
     from datetime import timedelta
     if not sched or not start:
         return ""
@@ -830,11 +873,13 @@ def fit_tag(start, end, sched):
         return f"Check rest {near}"
     off = sched.get("totals", {}).get("days_off")
     if isinstance(off, int):
-        y, m = map(int, sched["month"].split("-"))
-        nxt = date(y + (m == 12), m % 12 + 1, 1)
-        mdays = (nxt - date(y, m, 1)).days
-        need = 13 if mdays == 31 else 12
-        used = sum(1 for d in mine if d.year == y and d.month == m)
+        try:
+            a, b = (date.fromisoformat(str(x)[:10]) for x in period)
+        except (TypeError, ValueError):  # no bounds: the calendar month, as before 1.8.2
+            y, m = map(int, sched["month"].split("-"))
+            a, b = date(y, m, 1), date(y + (m == 12), m % 12 + 1, 1) - timedelta(days=1)
+        need = 13 if (b - a).days + 1 == 31 else 12
+        used = sum(1 for d in mine if a <= d <= b)
         if off - used < need:
             return f"Days off {off - used}"
     return "Fits"

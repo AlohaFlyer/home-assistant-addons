@@ -44,7 +44,7 @@ def _admin(mk, hunt=True, hs=10, nm=6, close_in=False, pilots=("pilot2",)):
     """The admin's Watcher as on Nov 22: one pot page (the mobile one), the pilots option, hunt or normal."""
     A = mk("")
     A.OPTS["pilots"] = [{"name": n} for n in pilots]
-    A.S["pot_urls"] = {"mobile": A.MOBILE_POT}
+    A.S["pot_urls"] = {"mobile": A.mobile_pot_url("003.152")}
     A.S["freq"] = {"hunt_s": hs, "normal_min": nm}
     A.FLAGS["hunt"] = hunt
     if close_in:
@@ -251,7 +251,7 @@ def test_the_pre_check_stops_a_chunk_with_no_room_before_any_wait(mk, monkeypatc
     with FW-0068 candidates never waits 1.5 to 3.5 s for a page the gate would leave out: no sleep at all (the probe's
     nor the gate's pace wait) and no FLICA load. One page of room (479 - keep) lets the probe read that page."""
     A = mk("", t=NOV10)
-    A.S["pot_urls"] = {"mobile": A.MOBILE_POT}
+    A.S["pot_urls"] = {"mobile": A.mobile_pot_url("003.152")}
     monkeypatch.setattr(A, "CREW_DIR", str(tmp_path / "crew_index"))
     insts = _setup9646(A, tmp_path)
     assert A.CI.variant_candidates(insts, A.DB.crew_rows(), A.local_now(), (), A.VARIANT_MAX_AGE_D) == [
@@ -293,7 +293,7 @@ def test_a_hunt_or_interval_change_mid_chunk_ends_the_chunk(mk, monkeypatch, tmp
     the new mode's keep and size (8 pages hunting), the probe from the letter it had reached."""
     if change == "probe":
         A = mk("", t=NOV10)  # no pilot: normal 6 min keeps 10 + 3 + 8 = 21
-        A.S["pot_urls"] = {"mobile": A.MOBILE_POT}
+        A.S["pot_urls"] = {"mobile": A.mobile_pot_url("003.152")}
         monkeypatch.setattr(A, "CREW_DIR", str(tmp_path / "crew_index"))
         _setup9646(A, tmp_path)
         A.S["crew_run"] = {"started": "2026-11-10T12:00:00", "pages": 0, "why": "slot", "slot": "2026-11-10T12"}

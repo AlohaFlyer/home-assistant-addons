@@ -59,7 +59,9 @@ class FlightWatcherRecallCard extends HTMLElement {
     if (typeof this.toggleAttribute === "function") this.toggleAttribute("dark", !!(h && h.themes && typeof h.themes.darkMode === "boolean" ? h.themes.darkMode : typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: dark)").matches));
     this._h = h;
     const st = h.states[this._c.entity];
-    const sig = st ? st.last_updated + JSON.stringify(st.attributes.me || {}) : "none";
+    // 1.8.2 (C5): the HST day is in the signature, so the first hass push after midnight HST redraws (the month moves
+    // on with the clock, _render) even when the sensor itself has not changed overnight
+    const sig = (st ? st.last_updated + JSON.stringify(st.attributes.me || {}) : "none") + "|" + this._today();
     if (sig === this._sig) return;
     const ae = this.shadowRoot && this.shadowRoot.activeElement;  // never redraw under someone typing
     if (ae && (ae.tagName === "TEXTAREA" || (ae.tagName === "INPUT" && (ae.dataset.ccr !== undefined || ae.dataset.me !== undefined)) || ae.tagName === "SELECT")) return;
@@ -67,6 +69,7 @@ class FlightWatcherRecallCard extends HTMLElement {
     this._render(st);
   }
   getCardSize() { return this._c.mode === "alert" ? 1 : 8; }
+  _today() { return new Date(Date.now() - 10 * 3600e3).toISOString().slice(0, 10); }  // HST, as every card
   // FW-0060: the sensor's days (newest, fresher) plus the older days only the file has, newest first
   _days(st) {
     const a = (st && st.attributes) || {};
@@ -180,7 +183,13 @@ class FlightWatcherRecallCard extends HTMLElement {
     if (this._busy && chk !== this._busy.was) { this._busy = null; this._note = ""; clearTimeout(this._busyT); }
     if (this._late !== undefined && chk !== this._late) { this._late = undefined; this._note = ""; }  // 1.7.1 (F#77): a late answer
     const me = a.me || {};
-    if (!this._m) { const n = new Date(Date.now() - 10 * 3600e3); this._m = n.toISOString().slice(0, 7); }
+    // 1.8.2 (C5): the month whose page holds today (HST; the card files each list day under its calendar month, as
+    // recall.py keys Over 75). It was set once at the first draw, so a page left open on Nov 30 never showed Dec 1's
+    // list. Now it moves on with the clock unless a month was picked (the arrows, a day link, or set before the first
+    // draw: this._m is then not the month the card took itself); back on this month it follows the clock again
+    const cur = this._today().slice(0, 7);
+    if (!this._m || this._m === this._mAuto) this._m = cur;
+    this._mAuto = cur;
     const [my, mm] = this._m.split("-").map(Number);
     if (!this._show) { this._show = { FO: true, CA: false }; try { const v = JSON.parse(localStorage.getItem("flight_watcher_recall_show") || "null"); if (v) this._show = v; } catch (e) {} }
     const show = this._show;
@@ -307,9 +316,24 @@ class FlightWatcherRecallCard extends HTMLElement {
       ctl = `<div class="k"><span class="st">superseded</span> CCR draft closed, no longer a miss (was ${this._e(RC_STATUS[act.was] || act.was || "new")}${act.ccr ? `, CCR ${this._e(act.ccr)}` : ""}). It comes back if the row turns into a miss again.</div>${hw ? `<div class="hw">${this._e(hw)}</div>` : ""}`;
     }
     if (v.missing && !live) ctl += `<div class="dn">No CCR draft and no alert until ${v.missing === "seniority" ? "your seniority # is on file (type it above)" : "your FLICA schedule for these days is on file"}.</div>`;
+    // 1.8.2 (R1): a list day is filed under its calendar month, but an Over 75 row's reserve answer is its bid month's
+    // (recall.py o75_month: Dec 1 is November's, PWA Definitions 47), so that month's select sits on the row
+    const bm = String(v.kind === "o75" && v.o75_month || "");
+    if (/^\d{4}-\d{2}$/.test(bm) && bm !== this._m) ctl += this._o75Row(bm, this._day(v.date).slice(4));
     const lab = { MISSED: "SHOULD HAVE BEEN YOU", POSSIBLE: "CHECK", NO: "NO MISS" }[v.verdict] || v.verdict;
     return `<div class="row v${this._e(v.verdict)}"><span class="chip ${this._e(v.verdict)}">${this._e(lab)}</span><b>${this._e(this._kind(v))} ${this._e(v.pairing)}</b> ${this._e(v.seat)} to #${this._e(v.sen)} ${this._e(v.pilot)}
       <div class="why">${(v.why || []).map((w) => this._e(w)).join(" · ")}${(v.refs || []).length ? ` <i>(${(v.refs || []).map((r) => this._e(r)).join(", ")})</i>` : ""}</div>${ctl}</div>`;
+  }
+  // 1.8.2 (R1): the Over 75 answer of bid month mk (YYYY-MM) on a row of another page (day: "Dec 1")
+  _o75Row(mk, day) {
+    const me = ((this._h.states[this._c.entity] || {}).attributes || {}).me || {};
+    const om = me.o75_months && typeof me.o75_months === "object" ? me.o75_months[mk] : undefined;
+    const cur = om === true ? "yes" : om === false ? "no" : "";
+    const [y, m] = mk.split("-").map(Number);
+    const opts = [["", "not set (CHECK)"], ["yes", "I was on reserve"], ["no", "not on reserve"]]
+      .map(([k, t]) => `<option value="${k}"${cur === k ? " selected" : ""}>${t}</option>`).join("");
+    return `<div class="k"><label>Over 75 in ${RC_MON[m - 1]} ${y}, the bid month of ${this._e(day)} (PWA Definitions `
+      + `47; Reserve Run only, 22.G.2.d): <select data-o75="${this._e(mk)}">${opts}</select></label></div>`;
   }
   _narrative(id) {
     const t = this.shadowRoot.querySelector(`textarea[data-n="${CSS.escape(id)}"]`);

@@ -467,8 +467,10 @@ class Store:
 
     # ---- finds
     def record_pot(self, month, pot, new_keys):
-        """Upsert every row seen; stamp gone_at on rows no longer in this month's pot."""
+        """Upsert every row seen; stamp gone_at on rows no longer in this month's pot. 1.8.2 (POT-8): a row in a bid
+        month's pot ('YYYY-MM') is filed under that month (a find 1.8.0 or an email filed under another month's key)."""
         t = now_iso()
+        own = 1 if re.fullmatch(r"\d{4}-\d{2}", str(month)) else 0  # the close-in folder keeps move_finds' rule
         with self.lock:
             self.db.execute("BEGIN")
             for k, row in pot.items():
@@ -476,11 +478,13 @@ class Store:
                     self.db.execute(
                         "INSERT INTO finds(key,pairing,month,row,first_seen,last_seen) VALUES(?,?,?,?,?,?) "
                         "ON CONFLICT(key) DO UPDATE SET first_seen=excluded.first_seen, "
-                        "last_seen=excluded.last_seen, gone_at=NULL, "
-                        "row=excluded.row", (k, row.get("pairing"), month, json.dumps(row), t, t))
+                        "last_seen=excluded.last_seen, gone_at=NULL, row=excluded.row, "
+                        "month=CASE WHEN ? THEN excluded.month ELSE month END",
+                        (k, row.get("pairing"), month, json.dumps(row), t, t, own))
                 else:  # keep the stored row current (CA, details, fit) while it is still in the pot
-                    self.db.execute("UPDATE finds SET last_seen=?, gone_at=NULL, row=? WHERE key=?",
-                                    (t, json.dumps(row), k))
+                    self.db.execute("UPDATE finds SET last_seen=?, gone_at=NULL, row=?, "
+                                    "month=CASE WHEN ? THEN ? ELSE month END WHERE key=?",
+                                    (t, json.dumps(row), own, month, k))
             keys = list(pot.keys())
             q = ",".join("?" * len(keys)) or "''"
             self.db.execute(f"UPDATE finds SET gone_at=? WHERE month=? AND gone_at IS NULL "
@@ -497,6 +501,14 @@ class Store:
         with self.lock:
             q = ",".join("?" * len(keys))
             self.db.execute(f"UPDATE finds SET month=?, gone_at=NULL WHERE key IN ({q})", (month, *keys))
+
+    def relabel_finds(self, old, new):
+        """1.8.2: the finds of a pot page key 1.8.0 used ('mobile', 'mobile_<bcid>', a month name) belong to the bid
+        month key ('YYYY-MM') the same page is read under now, so its next read stamps the gone ones."""
+        if not old or not new or old == new:
+            return
+        with self.lock:
+            self.db.execute("UPDATE finds SET month=? WHERE month=?", (new, old))
 
     def recent_finds(self, n=50):
         with self.lock:
@@ -965,6 +977,19 @@ class Store:
         with self.lock:
             rows = self.db.execute("SELECT key,pickup FROM finds WHERE pickup IS NOT NULL AND gone_at IS NOT NULL").fetchall()
         return [k for k, pk in rows if pk and not json.loads(pk).get("scored")]
+
+    def open_finds(self):
+        """1.8.2 (POT-6): [(key, first_seen)] of every find not stamped gone."""
+        with self.lock:
+            return self.db.execute("SELECT key, first_seen FROM finds WHERE gone_at IS NULL").fetchall()
+
+    def close_finds(self, gone):
+        """1.8.2 (POT-6): {key: gone_at} stamped on finds still open (a find stamped meanwhile keeps its stamp)."""
+        with self.lock:
+            self.db.execute("BEGIN")
+            for k, at in gone.items():
+                self.db.execute("UPDATE finds SET gone_at=? WHERE key=? AND gone_at IS NULL", (at, k))
+            self.db.execute("COMMIT")
 
     def has_find(self, key):
         with self.lock:

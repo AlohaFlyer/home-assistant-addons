@@ -1,5 +1,261 @@
 # Changelog
 
+## 1.8.2
+
+Two parts, built Nov 23 for the move from November to December: (A) the open time pot follows the bid month (with
+the Reserve Grid, requests and the transition audit's fixes), and (B) the schedule's other months are kept fresh, read
+early on the pilot's own signals, follow the bid month, and the schedule card has a refresh button. 1.8.1's stamp
+re-read (below) is kept as one of B's early re-read signals.
+
+### A. The open time pot follows the bid month
+
+The open time pot follows the bid month (Ryan, Nov 23, 2026: "Always look for the new pot each month. It's a
+different bcid", "I don't care about Nov. my schedule is set. I'm working on Dec now", then "if two months are active
+can you look at both?" and "Keep the 22 s, set it to Both").
+
+- What was wrong: 1.8.0 read one hard-coded page, the November 2026 pot (`mobileopentimepot.cgi?BCID=003.152`). FLICA
+  gives each bid month's pot its own BCID (Ryan's December link is `otframe.cgi?BCID=003.153`) and its mobile pot page
+  has no link to the next month, so the Watcher never found December and from Dec 2 would still have read November.
+- Now each month's BCID is looked for (`pot_pick`), in this order: a BCID a main menu or pot page link named for it
+  (read and checked before it is learned), else the one learned for it (Ryan's two links to start, 2026-11 `003.152`
+  and 2026-12 `003.153`, then each month whose page read with its own trips), else the latest learned month's suffix
+  plus the months between (`pot_bcid`; the suffix goes up by one a bid month: 003.154 is January 2027). The page read
+  is the frameless mobile pot (`mobile_pot_url`), never `otframe.cgi`. A page counts as a month's pot only when it is
+  an open time page and most of its trips start in that month (3 days either side for a bid period's edges), and a
+  BCID not learned yet only on a page that names the pilot's category (`category_check`, HNL 332 FO, as a whole
+  phrase: the mobile page's header reads "[HNL 332 FO]", so "FO" in an SFO layover never counts; the menu prefers
+  links of the latest learned month's prefix, `003`). A page of another month's trips (or category) is refused (one log
+  line and the state note) and the month's last good BCID is kept: a page that read as its month's pot is read again
+  at the next check with its baseline kept (its last good rows and pairing details stand in meanwhile, so no detail
+  page is read again), and only 3 refused reads in a row put it on its try time. A BCID not learned yet also needs most
+  of its trips in the month proper (a month's last days fall in the next month's slack). A BCID refused for another
+  month's trips may be named again once the month's try wait has passed (one odd page never bans a month's real
+  BCID); one of another category (with trips or empty) stays refused, and its links name no candidates. A next
+  month's try is never later than its bid period's first day (HST), so a
+  month not open or refused at its last try before the roll-over is read again at midnight. A menu or link
+  BCID that is no open time page gives way to the learned one at once. A month not found is tried again later and
+  looked for on the main menu at most every 6 h (through the gate; a reCAPTCHA there is never answered) and in the
+  links of pages read anyway; when the menu names its pick, that page is read then, not at its next try. Nothing else
+  is guessed, and the close-in folder's BCID is never a month's pot.
+- "This month" is the bid month of today, not the calendar month (council loop 1, Nov 23: ChatGPT, Gemini, Grok and
+  Perplexity each found it). Hawaiian's bid periods run November Nov 1 to Dec 1 and December Dec 2 to 31, so Dec 1's
+  open trips are in November's pot: on Dec 1 This month still reads November's pot and Both reads November's and
+  December's; the roll-over is at Dec 2 00:00 HST (the pairing files' period bounds, else the schedule pages, else the
+  calendar month when neither is on file).
+- The **Pot month** select (`select.<prefix>_pot_month`, the clock card's **Pot**): **This month** (the default on
+  every instance, as before: one page, the current bid month's, so James's pot moves to December on Dec 2),
+  **Next month** (the next bid month's pot once it is open, else this month's) or **Both**. A change re-plans the pot
+  pages at the next check and wakes the loop like the hunt switch.
+- No new loads with This month or Next month: one pot page a check. While the next month is not open, Next month tries
+  it once a day in place of that check's read of this month (whose rows from the check before stand in; with none on
+  hand, as in the first check after a start, the try waits one check; when both months are tries in one check, after
+  a pause or a restart, the next month's page goes first and this month's at the next check). A link on a pot page
+  never adds a month:
+  This month is one page a check on every instance. Both reads two pot pages a check (and the
+  Tradeboard, grid and request reads of both bid months); the 1.7.26 host pace and a pilot's FLICA budget spread
+  that, and the held note says so. Ryan's hunt with James's Watcher running is then held to at least about 22 s apart
+  (2 pages x 3600 / 329 loads = 21.9 s; 10.9 s with one page): "Hunting every 10 s is held to 380 FLICA loads an
+  hour: checks wait for the budget, at least 22 s apart". The 1.8.0 6-hourly walk for the next month (the main menu
+  and a pot page, two loads) is replaced by a main menu look (one load, plus one for a link that names no BCID) at
+  most every 6 h a month, only while a month of the select is not found: none with This month once its pot reads;
+  with Next month or Both about 4 a day until the next month's pot opens.
+- A pot page read for the first time (a new month, a new BCID for a month, or after a change of the select) sets its
+  baseline only: no alerts, pushes or finds from that read, swap idea pushes included. A month of the select that is
+  not read in a check (a refused page) keeps its baseline and its pushed swap ideas, so the trips posted meanwhile
+  alert at its next read and no idea is pushed twice. The update itself carries 1.8.0's November baseline over, so it
+  loses no alert, and 1.8.0's pushed swap ideas are held while November is not read. Pot keys of the wrong type in
+  the state file (a hand edit, baselines and fingerprints included) are dropped at start and before each check, never
+  a stop.
+- The clock card shows the Pot select (44 px on a phone) and the month or months each check reads ("December 2026
+  (003.153)"), from `sensor.<prefix>_state`'s new `pot_months` and `pot_mode`; a month not planned yet (right after a
+  select change) reads "not read yet"; a try that read in the last check reads ok. On a pilot's portal the select is
+  not offered (no portal command; the portal
+  contract and its fixture are unchanged): the card shows the months as text.
+- The mirror's Open time buttons follow the pot pages the Watcher reads; the swap map uses that pot's bid number.
+- The Reserve Grid (Res Grid column) and the Open column follow the pot pages too (Ryan, Nov 23: "dec is missing
+  stuff"): 1.8.0 read November's grid and pot alone, so December's month showed neither. With Both, December's
+  grid (003.153) is read with November's. A grid's dates take the year of its bid month, so January's grid read
+  in December keys 2027 days (it keyed 2026 before).
+- Audit fixes for the Nov to Dec change (Nov 23: six finders, adversarial checks, then a fixer and two reviewers a
+  group; every fix has a test that fails on the code before it):
+  - **Hidden trips and alert-email finds follow each trip's own bid month** (POT-2, LIVE-1, POT-6, POT-8, P9,
+    LIVE-11). 1.8.0 sent three false critical HIDDEN pushes overnight (H3613, H3625, H3604, all December): they were
+    missing from the one pot it read but sat in December's. An alert-email find now counts as gone, or hidden when its
+    seat is still Open, only against its own bid month's pot read OK in that check; else it stays open and filed under
+    its own month. A filled seat still records who took it at once; an Open seat waits for a check that reads its
+    month. A pickup queued by a good read is judged by that read, so a real hidden trip still pushes. Finds still open
+    when their bid period ends are closed at the period end, with no push and no FLICA load.
+  - **Request pushes when a bid month joins** (T3, S7): each request folder and each Tradeboard number has its own
+    first read, like the close-in folder. On it only decisions filed in the last 6 h push; older ones are history
+    (listed, never pushed). Setting Both, or December taking over on Dec 2, no longer sends 003.153's and 001.153's
+    whole history. Folders read before the update are not new. A page that is not really the list (FLICA's error
+    page, a gate-refused page, a list shown empty once) is never a first read. Limit: FLICA lists when a request was
+    filed, not decided, so on a new folder's first read a decision on a request filed over 6 h before is listed only.
+  - **The pot sensor keeps a fair share of each bid month** (C3): with Both it kept the first 60 rows and cut
+    December's. Close-in trips go first, then each month in turn, soonest first, sorted by month and start, with
+    "trimmed". The portal pot card shows the whole count and "N not shown", and never "empty" while the pot has
+    trips; the schedule card says "N of the M pot trips are not in the Open column" when the sensor could not carry
+    them all.
+  - **Drafts, rules and the close-in folder follow the bid month** (POT-5, LIVE-6, T10, POT-9, POT-10, POT-11): swap
+    and drop drafts name the folder of the trip's own bid month (never another month's, never a refused pick; else
+    they say the folder is not known), a close-in draft only for a trip of that folder's period. Marked swap ideas
+    stay inside one bid period, as automatic ones do. Rule months are HST bid months (Dec 1 is November's). The
+    close-in folder follows today's bid period whatever the select (kept all of Dec 1, December's from Dec 2).
+  - No new FLICA page loads; drafts only, nothing is ever sent.
+- After the update: the Pot month select on Ryan's clock card goes to **Both** (his Nov 23 choice): November's and
+  December's pots now, about 22 s apart; from Dec 2 December's, and January's once it opens. James's stays on This
+  month (his portal shows the months read only). `watch_next_month` stays in the Configuration tab as it is, but no
+  longer adds a page: the Pot month select chooses.
+
+### B. The schedule's other months kept fresh
+
+The other months of the schedule are kept fresh, read early on the pilot's own signals, and the schedule card has a
+refresh button (Ryan, Nov 23, 2026: "Maybe we need to add a little refresh button in the upper right corner of my
+schedule if I don't think that it's right, but also maybe it should just always be right.").
+
+- What was wrong (found Nov 23 from Pako's live data, log and recorder, read only): Ryan's December schedule stayed
+  stale; it was no parse error. His Dec 4 H3613 was swapped through open time for the Dec 6 H3613 about 00:53 to 01:03
+  HST. The Watcher's December read at 00:56 caught FLICA's page before the swap posted, and December was not read again
+  for about 8 h: another month counted as fresh for 6 h, a pass that got every month then closed the `sched_prev_at`
+  gate for 6 h, a failed month backed off 1 h doubling to 6 h, and a read's spare load went to the other months in the
+  dropdown order, so the closed October took it one read before December (December every 7.5 to 9 h). The Watcher also
+  ignored its own signals: `own_trip_times` re-read H3613 12-04 at 01:15 and found Ryan no longer on it (seat FO
+  became empty), and his Dec 4 seat entered the open time pot at 01:03; neither read December again, and neither did
+  Check now. A month read on Schedule Lookup was stored with no change line in the log.
+- Cadence: a month after the current one is fresh for 30 min (`SCHED_FUTURE_FRESH_S`; it was 6 h), a month before it
+  (a closed month) for 24 h (`SCHED_PAST_FRESH_S`). A month counts as read at the start of the read that loaded it, so
+  it is due again at the next 30 min read. The 6 h `sched_prev_at` gate now holds only the mobile previous-month
+  fallback, never a future month that is due. The other months are read future months first (nearest first), past
+  months last; a month that already waited one read past its freshness goes first (a future month before a past one,
+  then the most overdue), so the closed month still gets one read a day although the next month is due on every read,
+  and a month whose last read failed goes after those that did not, until it has waited one read past its back-off
+  (then it is tried once per back-off step: 1 h, 2 h, 4 h, then 6 h). Only the months the schedule keeps (the latest
+  three) are read.
+- Totals (FW-0019): the spare load of a read goes to a due future month, but when the current month is read on the
+  mobile path (its page has no Block / Credit) and its totals were last loaded an hour or more ago, the totals load
+  comes first and the future month waits one read (`totals_first`). A month that already waited a read goes before
+  totals under 2 h old: the next month never waits more than one read, and once a day the closed month takes the
+  totals' turn (the totals are then about 2 h old, once a day). A failed totals load counts as their turn too, so a
+  totals page that fails is tried once an hour, never on every read, also when no other month is due; while it fails
+  the month list on file stands (that page is the list's too), and every good Schedule Lookup page of another month
+  keeps the list. A month marked stale goes before totals under 2 h old, or when the read before did not load that
+  month; else the totals load first and the mark forces the next check's read (at once for a refresh press, which
+  costs one more check, pot pages included; Check now's own mark goes first at the next due read), so marks that keep
+  coming never hold the totals for ever. A refresh press for the current month on the mobile path re-reads its Block
+  / Credit too, and Check now does when they are 5 min old or more. A current month read on Schedule Lookup
+  itself (its page carries the totals and the month list) needs no extra load. With nothing else due the spare load
+  refreshes the totals, as before.
+- Early re-reads: (a) `own_trip_times` finds the pilot no longer listed on one of his own trips of another month (its
+  seat went from set to empty); (b) a row in the open time pot is one of his own trips of another month (the same
+  pairing and start date: his seat went into the pot); (c) the CrewTrac check (`sensor.<prefix>_crewtrac_check`) flags
+  a mismatch in another month; (d) Check now reads the future months too (and, on the mobile path, the current
+  month's totals when they are 5 min old or more). Each marks the month stale (`S
+  sched_stale`) with one log line naming it and the month ("schedule 2026-12: read early (his H3913 2026-12-04 is in
+  the open time pot)"); the next check runs the schedule read at once, forced, through the FLICA gate, still at most 2
+  loads, and the marked month takes the spare load first. No read loop: (a) fires once per trip and change, (b) once
+  per trip while the trip stays on his schedule (a row that leaves the pot and comes back fires no second read; pot
+  rows are by pairing and date, not seat), (c) once per CrewTrac snapshot (`S sched_trig`); a month is marked at most
+  every 5 min (`SCHED_TRIGGER_GAP_S`), and evidence the 5 min gap refuses (a CrewTrac mismatch just after a read of the
+  month included) waits and fires once the gap is over. Evidence for a month that already has a mark no read served
+  is covered by that mark's read (two of his trips in one month's pot: one read). A read forces only the marks it can
+  serve (the current month's, and the one month its spare load reads): a second marked month (Check now with two
+  future months listed) gets its own read at the next check, and a mark forces one read only (one that read could not
+  serve waits for the next due read). A check waits for the schedule read's loads only when a mark forces one.
+- Refresh button: a small round refresh button (U+21BB) at the upper right of the schedule card's month header, next to
+  Data age. A 44 px target on a phone, a real button (Tab, then Enter or Space), named "Refresh December 2026 from
+  FLICA", with the lock switch's focus ring (#1565c0 on light, #90caf9 on dark). A press publishes
+  `<prefix>/schedule/refresh` `{"month": "YYYY-MM"}` (the month shown) through the card's own `mqtt.publish`; the
+  Watcher marks that month stale (the current month: a forced read) and wakes the loop like Check now. At most one
+  press a month in 60 s: inside that the card says "Just refreshed" and sends nothing (the Watcher refuses one too). A
+  month FLICA does not list is refused with a note ("Not refreshed: FLICA does not list January 2027"), as are a month
+  FLICA lists but the schedule does not keep ("Flight Watcher keeps only the latest three months"), a paused or stopped
+  Watcher and a month backing off after a failed read; a press whose month the read drops, or whose read fails, says
+  why. Data age and the button are one box, so the button never wraps away from it; a card 700 px wide or less (its
+  own width, a container query on its ha-card: a narrow card in a wide window too) has the phone's two lines, the
+  button in the upper right. The status line ends under the button. The line under the header says "Refreshing..." until
+  the month's FLICA updated or read time moves, then "Refreshed: v12.004, FLICA updated ..., read 01:31:10 HST", or
+  "Not refreshed: <why>" (the Watcher's refusal, its read status, or no new read in 3 min). `sensor.<prefix>_schedule`
+  carries each month's `read_at`, `listed` (the months FLICA's Schedule Lookup lists) and `refresh` (the last press:
+  month, state queued, read, failed or refused, why).
+- Admin only: `schedule/refresh` is a core sub (`roles.SUBS`) in `roles.NOT_ON_PORTAL`, as the Pot month select's
+  `pot_month/set` (A): the portal's copy of the card (`FW_PORTAL`) has no button, its header is as in 1.8.1, and the
+  spool refuses the topic as anything else. No contract change: `PORTAL_CMDS`, `PORTAL_REFUSED`, `FEATURES`, the
+  budgets and the contract fixture are as they were. A second pilot's own Watcher answers on its own prefix only (his
+  Home Assistant copy publishes `flight_watcher_<name>/schedule/refresh`).
+- **The schedule follows the bid month** (audit LIVE-10, council loop 2): the current month is the bid month of today,
+  not the HST calendar month. On Dec 1 November is still current (read every 30 min, Schedule Lookup bd=1126 or the
+  mobile page of bid period 152; the refresh button, the sensor's `updated`, a failed read's note, Check now and the
+  triggers use November) and December is a future month until Dec 2. A past month's day-long freshness waits for its
+  bid period to end. The mobile page's month is its header's: December's carry-in rows (Nov 30, Dec 1) are dated in
+  November (Nov 30 read as Dec 30 before, moving the whole line a month), and a page of another month is never stored
+  as the current one. The in-flight lookup reads the picker's page for the pickup day's bid month.
+- **Another month's changes push** (audit S1, P6, T2): a month read again on Schedule Lookup, or through the previous
+  month's mobile fallback, runs the current month's change path: one "SCHEDULE changed" log line, event/schedule_changed
+  (a "Schedule changed" notice on a pilot's portal and ntfy, each instance on its own prefix, push isolation
+  unchanged), and the FW-0064 moves, pushed once as request_decided with the same text and Pay-Gross. Before, a
+  December trade seen before Dec 2 was log only. A month's first read is no change; a trip on two pages (Nov 30 to Dec
+  2, on November's page and carried onto December's) is one change, reported by the page that saw it first; a group of
+  moves is decided once every month it was seen on has been read again with nothing new.
+- **Read cadence follow-ups**: `own_trip_times` loads each trip and start once per check (a carry-in both months list
+  was loaded twice on Check now); `other_months_pending` lost its unused `stale_only`; dead `totals_stale` removed.
+- **Pricing, packages and months by bid period** (audit P2 to P4, S2 to S4, S8, S9, T6, T8, T11, POT-7, LIVE-7, C8,
+  LIVE-9; PWA Section 2 Definitions 47): requests and trades seen on the schedule price each trip from its own bid
+  period's pairings package (a Dec 1 trip uses November's, never December's same-numbered trip; with no figure the push
+  carries no amount, never a wrong one), and a number held twice (Nov 30 and Dec 12) is priced as the trip the request
+  names by its day. For a Dec 1 trip the FAR column, near misses, report and release, the customs origin (PWA 2.19.b)
+  and the Recall check read November's package. Over 75 eligibility (PWA 22.G.2.d) of a Dec 1 row is November's
+  answer (the Recall card gives such a row its own "Over 75 in Nov 2026" select). The fit tag's days off minimum (PWA
+  10.G.1.a: 12 in a 30-day period, 13 in a 31-day one) counts the bid period; a pickup across the edge is checked in
+  each period it touches. A Dec 1 trip is in November's crew index file too. On Dec 1 the pilot lookup offers November
+  and December.
+- **December award carry-in and Improved pay** (audit T5, LIVE-3, T9): the award parser reads a trip carried in from the
+  bid period before (FLICA prints it in the C/IN column left of the first day with its first day, "Nov30", under it): it
+  is dated from that marker, priced from the previous period's package and keeps its Cr row share as this period's
+  credit. A pairing printed just right of a day header moves to the next day only when its own release shows it there
+  (December's first trip, released under Dec 5, starts Dec 3). Everything else reads as 1.8.1 read it. After the update
+  the award texts on file are read again (no FLICA load); a changed awarded line keeps its time, the version after it
+  is compared again, later versions stay as stored, and the month's stale Improved pay row leaves the sensor so the card
+  prices it again. Ryan's December Improved-Pay-Gross read -$4,638 from a phantom 21:00 trip. The Improved pay gross
+  state is the bid month in progress, named in a new `month` attribute.
+- **Cards follow HST and the bid month** (audit C4, C5, C7, C9, C10, P8, S11): the schedule card's month is the bid
+  month holding today in HST, never the device's clock or time zone (a phone on Japan time turned the month up to 19 h
+  early). On Dec 1 Now opens November (the carried trip keeps its code and in-flight mark); December from Dec 2. An
+  offset set in an earlier bid month counts as 0 once the month moves on. The faded rows are the days outside the bid
+  period the totals cover (Dec 1 plain on November, faded on December). The Recall/O75 card moves on with the clock
+  at midnight HST unless a month was picked. The pilot card offers this bid month and the next.
+- **CrewTrac check knows which copy is newer** (audit LIVE-8): when FW's copy of a trip or month credit is newer than
+  Hark's snapshot and the two differ, it reads "CrewTrac not updated yet (pulled HH:MM HST)", counted as waiting (new
+  `waiting` attribute), never a mismatch, so it never triggers an early read. A snapshot newer than FW's copy keeps the
+  mismatch and the early read. After each December trade the check read "CrewTrac controls" for about 12.6 h while FW
+  was right.
+- **A missing smart.json month type is said** (audit S6): while a bid month the Watcher reads has no month type, the
+  state note says so ("smart.json has no month type for December 2026") and the log says once a day that its finds and
+  pushes carry no month rule. Nothing is guessed and the file is never written. (Ryan added December as "line" on Nov
+  23.)
+- **The bid month edge, council loop 3** (Nov 24): five risks replayed across Dec 1 to Dec 2 00:00 HST
+  (`tests/test_fw182_council3.py`). The Pot month select on Dec 1 (Next month reads December's 003.153, never
+  January's) and from 00:00; a read that runs across 00:00 keeps the month it started with (a page of that month
+  loaded after 00:00 is accepted, and a refresh press whose read fails after 00:00 is answered for that month: it
+  stayed "queued" before); November's daily re-read is quiet when nothing changed and pushes once when it did; FLICA's
+  stamp moving with nothing changed reads December early and sends nothing; a carry-in trip counts once. Two fixes: the
+  refresh press above, and the FAR column and the Working Flight take a carry-in trip to its latest end on file
+  (`_line_months`: H3908 Nov 29 to Dec 3 read as Nov 29 only on November's page, so a Dec 3 pickup showed no Conflict
+  and Dec 1's Working Flight named the next trip). On Ryan's mobile path November still gets one Schedule Lookup read
+  at the spare load soon after 00:00: it is the baseline its next read's moves are compared with (moves are recorded
+  only between two reads of the same page), so a change on its page alone in the first day after Dec 2 is pushed.
+- FLICA load budget: at most 2 loads a read (`SCHED_TRIES_PER_READ`), unchanged; GET only, no new page type, paced 1.5
+  to 3.5 s through the gate. A current month read on Schedule Lookup: the next month on every 30 min read, about 2 more
+  loads an hour per pilot (4 instead of 2), and the closed month once a day. On the mobile path with no totals on the
+  page: still 4 loads an hour (the totals and the next month take turns, each about hourly; the totals went every read
+  before), so there the next month waits one read at most (about an hour, every day), and once a day the closed
+  month takes the totals' turn (the totals about 2 h old then). A trigger adds one forced read (2 loads) at most every
+  5 min a month. A refresh press is Ryan's own request for a read (at most one a month a minute): in the one case where
+  totals 2 h old take its read, it starts one more check at once (its pot pages included). The audit fixes add no
+  FLICA page load (on Dec 1 the in-flight lookup skips FLICA's default page, one load fewer).
+- Replayed in tests (`tests/test_fw182_sched_fresh.py`, synthetic pages): a December page that changes 10 min after a
+  read shows at the next 30 min read (20 min later; it was about 8 h), and at the next check (6 min) after trigger (a)
+  or (b).
+
 ## 1.8.1
 
 December follows FLICA within a read (Hark for Ryan, Nov 23, 2026: "FW is not updating his December schedule

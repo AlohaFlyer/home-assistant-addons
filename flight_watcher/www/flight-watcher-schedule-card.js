@@ -36,6 +36,21 @@
 // text on one line in the usual fonts; a wider font wraps inside it), and on a phone the rest of the Lock switch's
 // line, at its right (a long text wraps inside it, under the switch's 44 px), so the arrows, the month and Now keep
 // the second line to themselves and the header two lines.
+// 1.8.2 (Ryan, Nov 23: "Maybe we need to add a little refresh button in the upper right corner of my schedule if I
+// don't think that it's right, but also maybe it should just always be right."): a small round refresh button (U+21BB)
+// at the right of the month header, next to Data age, a 44 px target on a phone, named "Refresh <Month YYYY> from
+// FLICA". A press publishes <prefix>/schedule/refresh with the month shown ({"month": "YYYY-MM"}); the Watcher reads
+// that month at its next check (woken at once). At most one press a month in 60 s ("Just refreshed", nothing sent); a
+// month FLICA does not list (the schedule sensor's listed) is refused here with a note. The line under the header says
+// "Refreshing..." until the month's FLICA 'updated' or read time (read_at) moves, then "Refreshed" with the version, or
+// "Not refreshed: <why>" (the Watcher's refusal, or after 3 min). Home Assistant only: the portal's copy (FW_PORTAL)
+// has no button (no such portal command). 1.8.2 review: the stamp and the button are one box (.agr) that never
+// breaks between them, so the button is always next to Data age at the header's right; a card 700 px wide or less
+// (the card's own width, a container query on its ha-card: a narrow card in a wide window too) has the phone's two
+// lines (the switch, the stamp and the button, then the month's line), so the button is in the upper right. The
+// portal's copy has neither: its header is as in 1.8.1.
+const FW_PORTAL = false;
+const RF_GAP_MS = 60000, RF_WAIT_MS = 180000, RF_SHOW_MS = 120000, RF_JUST_MS = 5000;
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const DOW = ["SU","MO","TU","WE","TH","FR","SA"];
 const MON3 = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
@@ -769,15 +784,37 @@ function fwCtLine(cc, fc, cb, fb) {
   if (cb != null && fb != null && fb !== cb) bad.push(`block CrewTrac ${fwCtHm(cb)}, FW ${fwCtHm(fb)} (${fwCtD(fb - cb)})`);
   return `CrewTrac ${fwCtHm(cc)}, FW ${fc != null ? fwCtHm(fc) : "?"}` + (bad.length ? ` \u2717 ${bad.join("; ")} (CrewTrac controls)` : " \u2713");
 }
+// 1.8.2 (LIVE-8): the Watcher puts FW's copy time of a trip ('PID|start') or month credit ('YYYY-MM') in the snapshot's
+// fw_at when it is newer than the pull (crewtrac.newer); a difference then reads 'CrewTrac not updated yet (pulled
+// HH:MM HST)', ok null (no cross, not one of the trips off). crewtrac.py: newer, pulled_hst, wait_line, _wait_what.
+function fwCtAt(snap, k) {
+  const a = Date.parse(String(((snap && snap.fw_at) || {})[k] || ""));
+  const b = Date.parse(String((snap && snap.pulled_at) || ""));
+  return Number.isFinite(a) && Number.isFinite(b) && a > b;
+}
+function fwCtWait(snap, what) {
+  const t = Date.parse(String((snap && snap.pulled_at) || ""));
+  const hhmm = Number.isFinite(t) ? new Date(t - 36e6).toISOString().slice(11, 16) : "?";  // HST, UTC-10
+  return `CrewTrac not updated yet (pulled ${hhmm} HST): ${what}`;
+}
+function fwCtWaitWhat(ct, pid, start, cc, fc, cb, fb) {
+  if (!ct) return `no ${pid} on ${start} in CrewTrac`;
+  if (cc == null) return "no credit for this trip in the snapshot";
+  const blk = cb != null && fb != null && fb !== cb ? `, block CrewTrac ${fwCtHm(cb)}, FW ${fwCtHm(fb)}` : "";
+  return `CrewTrac ${fwCtHm(cc)}, FW ${fc != null ? fwCtHm(fc) : "?"}${blk}`;
+}
 // one trip: {st, ok, line, ct (the snapshot trip)}; ok null when not compared
 function fwCtTrip(snap, pid, start, fwCr, fwBlk, nowMs) {
   const s = fwCtStatus(snap, nowMs);
   if (s.st !== "ok") return { st: s.st, ok: null, line: fwCtNot(s.st, s.age), ct: null };
   if (!Object.prototype.hasOwnProperty.call(snap.months || {}, String(start).slice(0, 7))) return { st: "out", ok: null, line: "CrewTrac not compared (month not in the snapshot)", ct: null };
-  const ct = fwCtFind(snap, pid, start);
+  const ct = fwCtFind(snap, pid, start), wait = fwCtAt(snap, `${pid}|${start}`);
+  if (!ct && wait) return { st: "ok", ok: null, line: fwCtWait(snap, fwCtWaitWhat(null, pid, start)), ct: null };
   if (!ct) return { st: "ok", ok: false, line: `CrewTrac has no ${pid} on ${start} \u2717 (CrewTrac controls)`, ct: null };
   const cc = fwCtM(ct.credit), fc = fwCtM(fwCr), cb = fwCtM(ct.block), fb = fwCtM(fwBlk);
   const ok = cc != null && (fc == null || fc === cc) && (cb == null || fb == null || fb === cb);
+  if (!ok && wait) return { st: "ok", ok: null, line: fwCtWait(snap, fwCtWaitWhat(ct, pid, start, cc, fc, cb, fb)),
+    ct };
   return { st: "ok", ok, line: fwCtLine(cc, fc, cb, fb), ct };
 }
 function fwCtMonth(snap, month, fwCr, nowMs) {
@@ -786,6 +823,10 @@ function fwCtMonth(snap, month, fwCr, nowMs) {
   const pr = ((((snap.months || {})[month]) || {}).pay_report) || {}, cc = fwCtM((pr.totals || {}).credit), fc = fwCtM(fwCr);
   if (cc == null) return { ok: null, line: "" };
   const ok = fc === cc;
+  if (!ok && fc != null && fwCtAt(snap, month)) {
+    const what = `Pay Report ${fwCtHm(cc)} credit (as of ${pr.as_of || "?"}), FW ${fwCtHm(fc)}`;
+    return { ok: null, line: fwCtWait(snap, what) };
+  }
   return { ok, line: `CrewTrac Pay Report ${fwCtHm(cc)} credit (as of ${pr.as_of || "?"}), FW ${fc != null ? fwCtHm(fc) : "?"}` + (ok ? " \u2713" : fc != null ? ` \u2717 off by ${fwCtD(fc - cc)} (CrewTrac controls)` : "") };
 }
 
@@ -1164,6 +1205,22 @@ const FWG_CSS = `
       .fwgsc{margin-top:4px;font-size:12px}.fwgsn{margin-top:4px;font-size:11.5px;color:var(--secondary-text-color)}
       @media (prefers-reduced-motion: reduce){.fwss{transition:none}}
 `;
+// 1.8.2 (C4, C9, C10, P8, S11): the bid month (YYYY-MM) whose period holds the day iso (HST), from a schedule
+// sensor's periods ({YYYY-MM: {start, end, src}}, the Watcher's bid_bounds); a period from the pairings package or the
+// schedule pages wins over a calendar one. With none that holds iso, the calendar month's own period still tells: one
+// that starts after iso (Dec 1 against December's Dec 2 to 31) puts iso in the month before, one that ends before it
+// in the month after. Else the calendar month. Only the calendar month or a neighbour, as the Watcher's
+// this_month_key (bid_period_key). G5B-4: one copy, here, for the schedule card and the pilot card
+function fwBidMonth(periods, iso) {
+  const cal = String(iso).slice(0, 7), [y, m] = cal.split("-").map(Number);
+  const mon = (k) => new Date(Date.UTC(y, m - 1 + k, 1)).toISOString().slice(0, 7);
+  const P = periods && typeof periods === "object" ? periods : {};
+  const ok = (k) => !!P[k] && FWG_ISO.test(P[k].start || "") && FWG_ISO.test(P[k].end || "") && P[k].start <= P[k].end;
+  const hit = [mon(-1), cal, mon(1)].filter((k) => ok(k) && P[k].start <= iso && iso <= P[k].end);
+  if (hit.length) return hit.find((k) => P[k].src !== "calendar") || hit[0];
+  if (ok(cal) && P[cal].src !== "calendar") return P[cal].start > iso ? mon(-1) : P[cal].end < iso ? mon(1) : cal;
+  return cal;
+}
 // ---- end shared schedule grid ----
 
 // ---- shared data age: keep identical in every card that holds it (tests/test_fw1712_data_age.py) ----
@@ -1369,11 +1426,13 @@ class FlightWatcherScheduleCard extends HTMLElement {
       "input_number.flight_watcher_federal_tax_pct", "input_number.flight_watcher_state_tax_pct", "input_number.flight_watcher_longevity_year", "input_text.flight_watcher_er_trips", "sensor.flight_watcher_schedule_versions"]
       .map((e) => h.states[e] && `${h.states[e].last_updated}/${h.states[e].state}`).join("|") + "|" + this._doh(h) + (this._isAdmin(h) ? "|admin" : "|pilot") + "|" + this._role(h) + (this._isAdmin(h) ? "|" + ((h.states["sensor.flight_watcher_crewtrac_check"] || {}).last_updated || "") : "");  // 1.7.22: admin only
     // 1.6.2 (Release A item 15): each state too, not only last_updated: the pilot portal keeps the month helper
-    // (input_number.flight_watcher_month_offset) in the page, and a step there need not move last_updated
+    // (input_number.flight_watcher_month_offset) in the page, and a step there need not move last_updated.
+    // 1.8.2 (C4): and the bid month of today, so a page left open moves on at the bid period's first day (00:00 HST)
+    const sigM = sig + "|" + this._bidToday(h);
     this._h = h;
     if (!this._ageT && this.isConnected) this._ageT = setInterval(() => this._ageTick(), 1000);  // 1.7.12: it ticks
-    if (sig === this._sig) { this._ageTick(); return; }
-    this._sig = sig;
+    if (sigM === this._sig) { this._ageTick(); return; }
+    this._sig = sigM;
     this._render();
   }
   // 1.7.12: the data age stamp (the clock card's), from this card's own entities (the shared block's fwAgeFrom)
@@ -1436,6 +1495,77 @@ class FlightWatcherScheduleCard extends HTMLElement {
     const box = this._ageShown();  // 1.7.26: its box, while open
     if (box) this._ageBoxFill(box, el);
     this._ageAria();  // 1.7.26 review: another tip took the box
+    this._rfShow();  // 1.8.2: the refresh line ("Refreshing..." gives way after 3 min)
+  }
+  // ---- 1.8.2: the refresh button (Home Assistant only; never in the portal's copy)
+  _rfHtml(key, y, m) {
+    if (FW_PORTAL) return "";
+    const name = `${MONTHS[m]} ${y}`, busy = this._rfText(key, Date.now()) === "Refreshing\u2026";
+    return `<button type="button" class="rfb" data-rf="${key}" aria-label="Refresh ${name} from FLICA" `
+      + `title="Refresh ${name} from FLICA" aria-busy="${busy}">`
+      + `<span class="rfi" aria-hidden="true">&#8635;</span></button>`;
+  }
+  _rfAttr() {
+    const st = this._h && this._h.states["sensor.flight_watcher_schedule"];
+    return (st && st.attributes) || {};
+  }
+  _rfMon(key) { return (this._rfAttr().months || {})[key] || {}; }
+  // the Watcher's current month (HST), which it always takes; any other month only when FLICA lists it
+  _rfCur() { return new Date(Date.now() - 10 * H).toISOString().slice(0, 7); }
+  _rfPress(key) {
+    if (FW_PORTAL || !this._h || !/^\d{4}-\d{2}$/.test(key || "")) return;
+    const now = Date.now(), all = this._rf || (this._rf = {}), r = all[key], at = this._rfAttr();
+    const name = `${MONTHS[parseInt(key.slice(5, 7), 10) - 1]} ${key.slice(0, 4)}`;
+    if (r && r.sent && now - r.sent < RF_GAP_MS) { r.just = now; this._rfShow(); return; }  // nothing is sent
+    const listed = Array.isArray(at.listed) ? at.listed : [];
+    if (listed.length && !listed.includes(key) && key !== this._rfCur()) {
+      all[key] = { note: `Not refreshed: FLICA does not list ${name}`, noteAt: now };
+      this._rfShow();
+      return;
+    }
+    const mon = this._rfMon(key), rf = at.refresh || {};
+    all[key] = { sent: now, upd: mon.updated || "", read: mon.read_at || "", rfAt: rf.at || "" };
+    this._h.callService("mqtt", "publish", { topic: "flight_watcher/schedule/refresh",
+      payload: JSON.stringify({ month: key }) });
+    this._rfShow();
+  }
+  // the line under the header for the month shown: '' (nothing pressed, or shown long enough), the press's note,
+  // "Refreshing...", "Refreshed ..." with the version, or "Not refreshed: <why>"
+  _rfText(key, now) {
+    const r = (this._rf || {})[key];
+    if (!r) return "";
+    if (r.just && now - r.just < RF_JUST_MS) return "Just refreshed";  // a press inside 60 s, for a few seconds
+    if (r.note) return now - r.noteAt < RF_SHOW_MS ? r.note : "";
+    if (!r.sent) return "";
+    const mon = this._rfMon(key), at = this._rfAttr(), rf = at.refresh || {};
+    if ((mon.updated || "") !== r.upd || (mon.read_at || "") !== r.read) {
+      if (!r.doneAt) r.doneAt = now;
+      return now - r.doneAt < RF_SHOW_MS ? `Refreshed: ${this._rfVer(key, mon)}` : "";
+    }
+    const mine = rf.month === key && (rf.at || "") !== r.rfAt;  // the Watcher's answer to this press
+    if (mine && (rf.state === "refused" || rf.state === "failed") || now - r.sent >= RF_WAIT_MS) {
+      if (!r.failAt) r.failAt = now;
+      const rs = at.read_status || {};
+      const why = (mine && rf.why) || (rs.ok === false && rs.why) || "no new read from FLICA in 3 min";
+      return now - r.failAt < RF_SHOW_MS ? `Not refreshed: ${why}` : "";
+    }
+    return "Refreshing\u2026";
+  }
+  // "v12.004, FLICA updated Nov 23, 2026 01:03, read 01:12:05 HST": the month's newest version and its read
+  _rfVer(key, mon) {
+    const vl = (this._vmonths()[key] || {}).versions || [], v = vl.length ? vl[vl.length - 1] : null;
+    const t = Date.parse(mon.read_at || "");
+    return [v ? `v${v.ver}` : "", mon.updated ? `FLICA updated ${mon.updated}` : "",
+      isNaN(t) ? "" : `read ${fwAgeWhen(t, Date.now())}`].filter(Boolean).join(", ") || "read from FLICA";
+  }
+  _rfShow() {
+    const sr = this.shadowRoot, el = sr && sr.querySelector(".fwm .rfs");
+    if (!el || !this._h) return;
+    const t = this._rfText(el.dataset.k, Date.now()), bad = t.startsWith("Not refreshed");
+    if (el.textContent !== t) el.textContent = t;
+    if (el.classList.contains("bad") !== bad) el.classList.toggle("bad", bad);
+    const b = sr.querySelector(".fwm .rfb"), busy = String(t === "Refreshing\u2026");
+    if (b && b.getAttribute("aria-busy") !== busy) b.setAttribute("aria-busy", busy);
   }
   // FW-0010: the pilot's DOH from the state sensor ("" when none is on file or the Watcher is offline); only this
   // value is in the redraw signature, not the sensor's last_updated (its note changes on every check)
@@ -1452,10 +1582,33 @@ class FlightWatcherScheduleCard extends HTMLElement {
     const f = fwListFile(this._vf || (this._vf = {}), "/local/flight-watcher/versions_", st, () => { this._sig = null; this.hass = this._h; });
     return (f && f.months) || ((st || {}).attributes || {}).months || {};
   }
+  // 1.8.2 (C4, C10, P8, S11): the month the offset counts from is the bid month that holds today in HST (fwBidMonth on
+  // the sensor's periods), never the device's own clock and time zone: a phone on Japan time turned the month up to
+  // 19 h early, and on Dec 1 (November's period runs Nov 1 to Dec 1) the card opened December, where a trip carried
+  // across from November has no code day and no in-flight mark. Now November through Dec 1 (Now and the reset on the
+  // 1st, offset 0, included) and December from Dec 2; the arrows step the offset from there as before
+  _bidToday(h) {
+    const st = (h || this._h).states["sensor.flight_watcher_schedule"];
+    return fwBidMonth(((st && st.attributes) || {}).periods, new Date(Date.now() - 10 * H).toISOString().slice(0, 10));
+  }
+  // 1.8.2 (G5A-1, G5B-2): the month offset as it counts now. The reset automation sets it to 0 at 00:01 on the
+  // calendar 1st, but the month it counts from moves on at the bid period's first day (Dec 2): an offset set against
+  // an earlier bid month (its last_changed, in HST, on the same periods) counts as 0, so a step made on Dec 1 to see
+  // December does not open January from Dec 2 to Jan 1 (nor February from Dec 31 when January starts then). With no
+  // last_changed (or one in a later bid month than today's: a clock off), as set
+  _offset(h) {
+    const S = (h || this._h).states, o = S["input_number.flight_watcher_month_offset"] || {};
+    const off = parseInt(o.state || "0", 10) || 0, t = Date.parse(o.last_changed || "");
+    if (!off || isNaN(t)) return off;
+    const st = S["sensor.flight_watcher_schedule"];
+    const was = fwBidMonth(((st && st.attributes) || {}).periods, new Date(t - 10 * H).toISOString().slice(0, 10));
+    return was < this._bidToday(h) ? 0 : off;
+  }
   _key() {
-    const off =parseInt((this._h.states["input_number.flight_watcher_month_offset"] || {}).state || "0", 10) || 0;
-    const d = new Date(); const m = d.getMonth() + off; const y = d.getFullYear() + Math.floor(m / 12);
-    return { y, m: ((m % 12) + 12) % 12, key: `${y}-${String(((m % 12) + 12) % 12 + 1).padStart(2, "0")}` };
+    const off = this._offset();
+    const [y0, m0] = this._bidToday().split("-").map(Number);
+    const m = m0 - 1 + off, y = y0 + Math.floor(m / 12), mm = ((m % 12) + 12) % 12;
+    return { y, m: mm, key: `${y}-${String(mm + 1).padStart(2, "0")}` };
   }
   _iso(s, y) { // '26Nov' -> '2026-11-26'
     const mm = MON3.indexOf((s || "").slice(2, 5).toUpperCase()); if (mm < 0) return "";
@@ -1571,6 +1724,8 @@ class FlightWatcherScheduleCard extends HTMLElement {
         if (ib2) { const k = this._key().key; const cur = this._idea; this._idea = cur && cur.key === k && cur.d === ib2.dataset.d ? null : { key: k, d: ib2.dataset.d, trip: ib2.dataset.trip };
           this._render(); const pn = this.shadowRoot.querySelector(".ipanel"); if (pn) pn.scrollIntoView({ behavior: "smooth", block: "nearest" }); return; }
         if (e.target.closest(".ix")) { this._idea = null; this._render(); return; }
+        const rb = e.target.closest(".rfb");  // 1.8.2: the refresh button (Home Assistant only)
+        if (rb) { this._rfPress(rb.dataset.rf); return; }
         const lk = e.target.closest(".lock");  // v48 (Ryan): lock / unlock the tap settings (blocked days, trade, drop)
         if (lk) { this._locked = !this._locked; try { localStorage.setItem("flight_watcher_lock", this._locked ? "1" : "0"); } catch (e2) { /* ignore */ } this._render(); return; }
         const locked = this._locked;
@@ -1612,8 +1767,14 @@ class FlightWatcherScheduleCard extends HTMLElement {
         const nv = e.target.closest(".nav");
         if (nv) {
           const d = parseInt(nv.dataset.nav, 10), ent = { entity_id: "input_number.flight_watcher_month_offset" };
-          if (d === 0) this._h.callService("input_number", "set_value", { ...ent, value: 0 });
-          else this._h.callService("input_number", d > 0 ? "increment" : "decrement", ent);
+          // 1.8.2 (G5A-1): an offset left from an earlier bid month counts as 0 (_offset): it is set to 0 first, so
+          // the arrow steps from the month shown (and the helper's last_changed moves on with it)
+          const h = this._h, raw = parseInt((h.states[ent.entity_id] || {}).state || "0", 10) || 0;
+          const step = () => h.callService("input_number", d > 0 ? "increment" : "decrement", ent);
+          if (d === 0) h.callService("input_number", "set_value", { ...ent, value: 0 });
+          else if (raw !== this._offset()) {
+            Promise.resolve(h.callService("input_number", "set_value", { ...ent, value: 0 })).then(step);
+          } else step();
           return;
         }
         const py = e.target.closest(".pay");
@@ -1686,6 +1847,14 @@ class FlightWatcherScheduleCard extends HTMLElement {
     const rs = (st && st.attributes && st.attributes.read_status) || {};
     const rsLine = rs.ok === false ? `FLICA schedule not read: ${rs.why || "no page accepted"}${rs.at_hst ? ` at ${rs.at_hst} HST` : ""}${rs.next_hst ? `; next try ${rs.next_hst} HST` : ""}` : "";
     const pot = ((S["sensor.flight_watcher_pot_count"] || {}).attributes || {}).pairings || [];
+    // 1.8.2 (C3-R1): the sensor's count is the whole pot (every bid month read); with two pots it carries a fair
+    // share of each month's rows, so the Open column and the Ideas' O marks can miss an open trip: say how many
+    const potN = Number(((S["sensor.flight_watcher_pot_count"] || {}).attributes || {}).count);
+    const potOff = Number.isFinite(potN) && potN > pot.length ? Math.round(potN) - pot.length : 0;
+    const potCut = potOff ? `<div class="cin pcut">${potOff} of the ${potOff + pot.length} pot trips are not in`
+      + ` the Open column or the Ideas' O marks: the sensor carries ${pot.length} (all Home Assistant keeps; each`
+      + " bid month gets a fair share, soonest first)."
+      + ` The Watcher still reads and watches all ${potOff + pot.length}.</div>` : "";
     const tb = ((S["sensor.flight_watcher_tradeboard_pickups"] || {}).attributes || {}).pairings || [];
     const liveOwnT = ((S["sensor.flight_watcher_own_trip_times"] || {}).attributes || {}).trips || {};
     // 1.7.22 (Hark): the CrewTrac check, the admin's only (Hark reads CrewTrac for Ryan; a pilot's card shows nothing)
@@ -2258,7 +2427,9 @@ class FlightWatcherScheduleCard extends HTMLElement {
       }
       const rows = (mon.days || []).map(([d, trip, lay]) => {
         const dt = new Date(d + "T12:00:00"); const wk = dt.getDay() === 0 || dt.getDay() === 6;
-        const other = dt.getMonth() !== m;
+        // 1.8.2 (C7): faded = outside the bid period the totals cover (bp: Dec 1 plain on November's page, faded on
+        // December's), the calendar month only when no bid period is known (bp is the calendar month then)
+        const other = !inBp(d);
         const sc = this._school(d); const noSchool = !!(sc && sc.days.has(d));
         const pp = trip === PAYP ? (ppDay[d] || null) : null;  // 1.7.2: a PAYP day (pay protected, PWA Definitions 57)
         const t = trip === "VAC" ? `<span class="vac">VAC</span>` : trip === PAYP ? `<span class="payp tag" title="${this._esc(ppTitle(pp))}">PAYP</span>` : (trip ? `<span class="trip${trade.has(trip + "|" + d) ? " tr" : ""}" data-k="${this._esc(trip + "|" + d)}" role="button" tabindex="0" aria-expanded="${pdK === trip + "|" + d ? "true" : "false"}" title="${this._esc(((ownT[`${trip}|${d}`] || {}).crew || []).join("\n") || "crew not read yet")}">${this._esc(trip)}</span>${d <= today ? "" : `<span class="trb${trade.has(trip + "|" + d) ? " on" : ""}" data-k="${this._esc(trip + "|" + d)}" title="${trade.has(trip + "|" + d) ? "Marked: would trade this trip for a better one. Tap to unmark." : "Tap to mark this trip as one you would trade for a better one."}">&#8644;</span>`}${d <= today || !admin ? "" : `<span class="drb${dropM.has(trip + "|" + d) ? (dropR[trip + "|" + d] ? " on rdy" : " on") : ""}" data-k="${this._esc(trip + "|" + d)}" title="${dropR[trip + "|" + d] ? "Grid green on every day: drop request drafted (draft only, never sent: drop it yourself in FLICA). Tap to unmark." : dropM.has(trip + "|" + d) ? "Marked: would DROP this trip once the reserve grid is green on every day of it. Tap to unmark." : "Tap to mark this trip as one you would DROP when the grid allows it."}">&#8615;</span>`}` : "");
@@ -2434,7 +2605,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
       })();
       const cutT = sum.cut > 0.01 ? ` <span class="k" title="${this._esc(`FW counts ${hm(sum.cut)} less than FLICA: a delayed leg FLICA counted twice (PWA 2.A.15.a.1, 4.B.1). ${sum.cutT.join("; ")}. Tap the trip's Pay-Gross for the breakdown.`)}">PWA -${hm(sum.cut)}</span>` : "";
       const tot = tgrp("thrs", [["Credit", hm(crAll) + cutT + (sum.ppEst ? ` <span class="k" title="${this._esc(`Not checked: the PAYP estimate is ${srcFl}'s month credit less everything else counted, so Credit matches it by construction.`)}">est</span>` : chk(crAll, fCr))], ["CrewTrac", !admin ? "" : (() => { const c = fwCtMonth(ctSnap, key, hm(crAll), Date.now()); const bad = c.ok === false || sum.ctBad.length > 0;
-          return c.line || sum.ctBad.length ? `<span class="${bad ? "bad" : "okc"}" title="${this._esc([c.line, sum.ctBad.length ? `Trips off CrewTrac (tap the Pay-Gross): ${sum.ctBad.join(", ")}` : ""].filter(Boolean).join("\n"))}">${c.ok === true && !sum.ctBad.length ? "&#10003;" : c.ok === null && !sum.ctBad.length ? this._esc(c.line.replace(/^CrewTrac /, "")) : `&#10007; ${sum.ctBad.length ? sum.ctBad.length + " trip" + (sum.ctBad.length > 1 ? "s" : "") : ""}${c.ok === false ? `${sum.ctBad.length ? ", " : ""}month ${this._esc(c.line.replace(/^.*off by /, "").replace(/ \(CrewTrac controls\)$/, ""))}` : ""}`}</span>` : ""; })()],
+          return c.line || sum.ctBad.length ? `<span class="${bad ? "bad" : "okc"}" title="${this._esc([c.line, sum.ctBad.length ? `Trips off CrewTrac (tap the Pay-Gross): ${sum.ctBad.join(", ")}` : ""].filter(Boolean).join("\n"))}">${c.ok === true && !sum.ctBad.length ? "&#10003;" : c.ok === null && !sum.ctBad.length ? this._esc(c.line.replace(/^CrewTrac /, "").replace(/\): .*$/, ")")) : `&#10007; ${sum.ctBad.length ? sum.ctBad.length + " trip" + (sum.ctBad.length > 1 ? "s" : "") : ""}${c.ok === false ? `${sum.ctBad.length ? ", " : ""}month ${this._esc(c.line.replace(/^.*off by /, "").replace(/ \(CrewTrac controls\)$/, ""))}` : ""}`}</span>` : ""; })()],
         ["Block", hm(sum.blk) + chk(sum.blk, fBlk)], ["Block Avail", `<span class="${bAv <= 0 ? "bad" : ""}" title="98:00 bid-month block cap (crew scheduling) minus FLICA's bid-period Block">${bAv < 0 ? "-" + hm(-bAv) : hm(bAv)}</span>`], ["Soft", hm(sum.soft)],
         ["Vacation", sum.vacDays ? `${hm(sum.vac)} <span class="k">(${sum.vacDays} d x ${hm(VAC_H)})</span>` : ""],
         // 1.7.20: pay with no credit (PWA 4.D.2.e LODO, the recall's extra 100%, 4.M.1.a): inside Pay-Gross, never in Credit
@@ -2485,6 +2656,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
       const bpTxt = `${mdy(bp.from)} to ${mdy(bp.to)}${bp.src === "package" ? " (the pairings package)" : bp.src === "schedule" ? " (the schedule pages: no pairings package on file)" : " (the calendar month: no pairings package or schedule page gives the bid period)"}`;
       const totT = `${MONTHS[m]} totals: flown in the bid period, ${bpTxt}: each segment credited to the bid period it originates in (PWA 4.A), a trip across the bid period's edge its part here, plus vacation days at ${hm(VAC_H)} (PWA 6.J) and pay protected (PAYP) credit (PWA Definitions 57). Pay at ${rateTxt}/credit h incl. the PWA 4.O.1 crew override, LODO (4.D.2.e) and recall (4.M.1.a) pay where due; net after the tax settings. Checked against FLICA's Block and Credit.${carryT.length ? ` Also counted: ${carryT.join("; ")}.` : ""}`;
       body = `<div class="wrap"><table class="cal">${head}${rows}</table></div>${pdM && !narrow ? fwgPanelHtml(pdM) : ""}<div class="tot" title="${this._esc(totT)}">${tot}</div>${carryT.length ? `<div class="cin">Also counted (PWA 4.A): ${this._esc(carryT.join("; "))}.</div>` : ""}${bp.src === "calendar" ? `<div class="cin">Totals over the calendar month: no pairings package or schedule page on file gives this bid period.</div>` : ""}`;
+      body += potCut;  // 1.8.2 (C3-R1)
     }
     const upd = awd0 ? "" : st && st.attributes ? (st.attributes.updated || "") : "";
     // 1.6.2: the award label and the read status sit above the grid (or the 'No schedule' line)
@@ -2501,6 +2673,12 @@ class FlightWatcherScheduleCard extends HTMLElement {
     const ae = this.shadowRoot.activeElement;
     const fk = ae && ae.matches && ae.matches(".fwm .trip[data-k]") ? ae.dataset.k : "";  // the pairing that has the focus
     const lf = !!(ae && ae.matches && ae.matches(".fwm .lock"));  // 1.7.18: the lock switch keeps the focus across a redraw
+    const rff = !!(ae && ae.matches && ae.matches(".fwm .rfb"));  // 1.8.2: so does the refresh button
+    // 1.8.2: the refresh button and its line (never in the portal's copy)
+    const rfB = this._rfHtml(key, y, m), rfS = FW_PORTAL ? "" : `<div class="rfs" role="status" aria-live="polite" `
+      + `data-k="${key}">${this._esc(this._rfText(key, Date.now()))}</div>`;
+    // 1.8.2 review: the stamp and the button in one box, so the button never wraps away from Data age
+    const agH = rfB ? `<span class="agr">${this._ageHtml(upd)}${rfB}</span>` : this._ageHtml(upd);
     main.innerHTML = `<style>${FWG_CSS}
       ha-card{padding:10px 8px 12px;font-size:12.5px;line-height:1.25;box-sizing:border-box}
       @media (max-width:700px){ha-card{font-size:10.5px;padding:6px 3px 8px}
@@ -2570,8 +2748,27 @@ class FlightWatcherScheduleCard extends HTMLElement {
       .ag[data-age="amber"]{color:var(--fw-warn,#8a5300)}.ag[data-age="red"]{color:var(--fw-err,#c62828)}
       .hd2 .ag{margin-left:auto;text-align:right;white-space:normal;min-width:0;flex:0 0 21em}
       @media (max-width:700px){.hd2 .ag{order:1;flex:1 1 0}.hd2 .sp{order:2}.hd2 .nav,.hd2 h3{order:3}}
+      .hd2 .agr{display:inline-flex;align-items:center;gap:2px;margin-left:auto;min-width:0;flex:none}
+      .hd2 .agr .ag{margin-left:0;order:0}
+      @media (max-width:700px){.hd2 .agr{order:1;flex:1 1 0}.hd2 .agr .ag{flex:1 1 0}}${FW_PORTAL ? "" : `
+      ha-card{container:fwsc/inline-size}
+      @container fwsc (max-width:700px){.hd2.rf{row-gap:2px}.hd2.rf .sp{flex:0 0 100%;height:0;order:2}
+        .hd2.rf .agr{order:1;flex:1 1 0}.hd2.rf .agr .ag{flex:1 1 0}.hd2.rf .nav,.hd2.rf h3{order:3}}`}
+      .rfb{flex:none;box-sizing:border-box;width:30px;height:30px;min-width:30px;padding:0;margin:0 0 0 2px;
+        border-radius:50%;border:1px solid var(--secondary-text-color,#555);
+        background:var(--card-background-color,#fff);
+        color:var(--primary-text-color,#212121);font:700 17px/1 sans-serif;cursor:pointer;display:inline-flex;
+        align-items:center;justify-content:center;-webkit-tap-highlight-color:transparent}
+      @media (hover:hover){.rfb:hover{background:rgba(0,0,0,.06)}
+        :host([dark]) .rfb:hover{background:rgba(255,255,255,.1)}}
+      .rfb:focus-visible{outline:3px solid var(--fws-ring);outline-offset:1px}
+      .rfb[aria-busy="true"] .rfi{display:inline-block;animation:rfspin 1.2s linear infinite}@keyframes rfspin{
+        to{transform:rotate(360deg)}}@media (prefers-reduced-motion:reduce){.rfb[aria-busy="true"] .rfi{animation:none}}
+      @media (max-width:700px),(pointer:coarse){.rfb{width:44px;height:44px;min-width:44px;font-size:20px}}
+      .rfs{margin:0 0 4px;text-align:right;font-size:11.5px;line-height:1.3;
+        color:var(--secondary-text-color)}.rfs:empty{margin:0}.rfs.bad{color:var(--fw-warn,#8a5300);font-weight:600}
       .unc{color:var(--fw-warn,#8a5300);font-weight:700}.ubn{margin:2px auto 6px;max-width:620px;text-align:center;font-size:12px;line-height:1.3}.set .keep{min-height:44px;padding:6px 12px;font:inherit;border-radius:6px;cursor:pointer}
-    </style><ha-card><div class="frame"><div class="hd2">${this._lockHtml()}<span class="sp"></span><span class="nav" data-nav="-1" title="Previous month">&#8249;</span><h3>${MONTHS[m]} ${y}</h3><span class="nav" data-nav="1" title="Next month">&#8250;</span><span class="nav now" data-nav="0" title="This month">Now</span>${this._ageHtml(upd)}</div>${shead}${vhtml}${body}</div>${panel}
+    </style><ha-card><div class="frame"><div class="hd2${rfB ? " rf" : ""}">${this._lockHtml()}<span class="sp"></span><span class="nav" data-nav="-1" title="Previous month">&#8249;</span><h3>${MONTHS[m]} ${y}</h3><span class="nav" data-nav="1" title="Next month">&#8250;</span><span class="nav now" data-nav="0" title="This month">Now</span>${agH}</div>${rfS}${shead}${vhtml}${body}</div>${panel}
     <div class="info"></div>
     <details class="leg"><summary>Key</summary><table class="lt">
     <tr><td>Trip</td><td>Your pairing. Tap it for the pairing detail (legs, layovers, hotel, totals and crew, from the pairings package; below the schedule, or a sheet from the bottom on a phone); tap it again, the &#10005; or Esc to close. R = report time. Tap &#8644; to mark it "would trade" (orange).</td></tr>
@@ -2612,6 +2809,8 @@ class FlightWatcherScheduleCard extends HTMLElement {
     }
     if (fk && !this._sheet.open) { const t = this._tripEl(fk); if (t) t.focus({ preventScroll: true }); }
     if (lf) { const l = main.querySelector(".lock"); if (l) l.focus({ preventScroll: true }); }
+    if (rff) { const b = main.querySelector(".rfb"); if (b) b.focus({ preventScroll: true }); }
+    this._rfShow();
   }
   // 1.7.7: the pairing detail: open, swap to another pairing, or close (the same one again)
   _pdToggle(k) {

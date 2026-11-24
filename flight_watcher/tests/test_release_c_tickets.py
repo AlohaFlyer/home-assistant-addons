@@ -650,11 +650,19 @@ def test_version_is_one_seven_two():
     # 1.7.25 (Nov 22, Hark): ALPA's delay ruling (DART 417120) as a general broken-duty rule; no contract change
     # 1.7.26 (Nov 22): the crew index yields to the pot checks, the admin's checks fit the host hour, Check now in the
     # data age box; no new FLICA load, no contract change
+    # 1.8.0 (Nov 23): the FLICA mirror through the Watcher's own session; no contract change
     # 1.8.1 (Nov 23, Hark for Ryan): a later month is read again when FLICA's schedule stamp moves; no contract change
-    assert _re.search(r'^version: "1\.8\.1"$', cfg, _re.M)
-    assert _re.search(r'^VERSION = "1\.8\.1"$', open(os.path.join(HERE, "watcher.py"), encoding="utf-8").read(), _re.M)
+    # 1.8.2 (Nov 23): the open time pot follows the bid month, the Pot month select (off the portal), other months kept
+    # fresh, early re-reads, the schedule refresh button (off the portal); no contract change
+    assert _re.search(r'^version: "1\.8\.2"$', cfg, _re.M)
+    assert _re.search(r'^VERSION = "1\.8\.2"$', open(os.path.join(HERE, "watcher.py"), encoding="utf-8").read(), _re.M)
     log = open(os.path.join(HERE, "CHANGELOG.md"), encoding="utf-8").read()
-    assert log.startswith("# Changelog\n\n## 1.8.1\n") and "\n## 1.8.0\n" in log and "\n## 1.7.26\n" in log and "\n## 1.7.25\n" in log and "\n## 1.7.24\n" in log and "\n## 1.7.23\n" in log and "\n## 1.7.22\n" in log and "\n## 1.7.21\n" in log and "\n## 1.7.20\n" in log and "\n## 1.7.19\n" in log and "\n## 1.7.18\n" in log and "\n## 1.7.17\n" in log and "\n## 1.7.16\n" in log and "\n## 1.7.15\n" in log and "\n## 1.7.14\n" in log and "\n## 1.7.13\n" in log and "\n## 1.7.12\n" in log and "\n## 1.7.11\n" in log and "\n## 1.7.10\n" in log and "\n## 1.7.9\n" in log and "\n## 1.7.8\n" in log and "\n## 1.7.7\n" in log and "\n## 1.7.6.1\n" in log and "\n## 1.7.6\n" in log and "\n## 1.7.5\n" in log and "\n## 1.7.4\n" in log and "\n## 1.7.3\n" in log and "\n## 1.7.2\n" in log and "\n## 1.7.1.1\n" in log and "\n## 1.7.1\n" in log and "\n## 1.7.0\n" in log
+    assert log.startswith("# Changelog\n\n## 1.8.2\n")  # 1.8.2 on top, the chain below it
+    for v in ("1.8.1", "1.8.0",
+              "1.7.26", "1.7.25", "1.7.24", "1.7.23", "1.7.22", "1.7.21", "1.7.20", "1.7.19", "1.7.18",
+              "1.7.17", "1.7.16", "1.7.15", "1.7.14", "1.7.13", "1.7.12", "1.7.11", "1.7.10", "1.7.9", "1.7.8",
+              "1.7.7", "1.7.6.1", "1.7.6", "1.7.5", "1.7.4", "1.7.3", "1.7.2", "1.7.1.1", "1.7.1", "1.7.0"):
+        assert f"\n## {v}\n" in log, v
     assert chr(0x2014) not in log
     dock = open(os.path.join(HERE, "Dockerfile"), encoding="utf-8").read()
     assert "photos.py" in dock and "bidcal.py" in dock and "pilotpdf.py" in dock and "Pillow==11.0.0" in dock

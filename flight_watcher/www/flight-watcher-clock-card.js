@@ -42,7 +42,22 @@
 // today, and the thresholds. On a phone the stamp starts its own line and Next the one after it, and the stamp (and
 // Next) keep one width and the stamp one weight at every level, so the card and its buttons never move as time ticks. mode: age is a tile
 // (56 px, one grid row, "Data age" over its value, never wrapped), and a mode change on the same card builds it again.
+// 1.8.2 (Ryan, Nov 23: "I'm working on Dec now"): a Pot select beside the intervals (select.flight_watcher_pot_month:
+// This month, Next month, Both; the same look and 44 px phone target as the interval selects) and, beside it, the
+// month(s) each check reads with their BCIDs ("December 2026 (003.153)"), then a month of the select not read yet with
+// why ("January 2027 not open yet"), from the state's pot_months. In the pilot portal the select is no command (no
+// portal sub, roles.NOT_ON_PORTAL): the card shows the mode and the months as text, read only.
 const FW_PORTAL = false;
+const FC_POT = ["This month", "Next month", "Both"];  // the Watcher's POT_MODES
+// 1.8.2: the months of the state's pot_months: each read every check with its BCID, then the others with their status
+function fcPotText(list) {
+  const ok = (r) => r && typeof r.month === "string";
+  const read = list.filter((r) => ok(r) && r.read).map((r) => `${r.name || r.month} (${r.bcid || "?"})`);
+  const rest = list.filter((r) => ok(r) && !r.read)
+    .map((r) => `${r.name || r.month} ${r.how === "not found yet" ? "not found yet"
+      : r.status && r.status !== "ok" ? r.status : "not read yet"}`);  // 1.8.2: a page not planned yet is not read
+  return [...read, ...rest].join(" \u00b7 ");
+}
 const FW_AGE_IDS = { last: "sensor.flight_watcher_last_check", state: "sensor.flight_watcher_state",
   next: "sensor.flight_watcher_next_check", hunt: "switch.flight_watcher_hunt_mode",
   normal: "number.flight_watcher_normal_check_every", huntEvery: "number.flight_watcher_hunt_check_every",
@@ -300,6 +315,7 @@ class FlightWatcherClockCard extends HTMLElement {
         select{font:inherit;font-size:12px;padding:2px 2px;border-radius:6px;border:1px solid var(--divider-color);background:var(--card-background-color);color:var(--primary-text-color)}
         .iv{display:inline-flex;align-items:center;gap:3px;font-size:12px;color:var(--secondary-text-color)}
         .ivt{font-weight:600;color:var(--primary-text-color)}
+        .pmm{font-size:12px;font-weight:600;color:var(--primary-text-color);overflow-wrap:anywhere;min-width:0}
         @media (max-width:700px){ha-card{font-size:12px;gap:6px}.ctl{margin-left:0;width:100%}.ag{flex-basis:100%}.s1,.s2{display:none}
           button{min-height:44px;min-width:44px;padding:6px 12px;font-size:13px}select{min-height:44px;min-width:56px;font-size:16px}}
         ${FW_AGE_BOX_CSS}
@@ -311,6 +327,9 @@ class FlightWatcherClockCard extends HTMLElement {
         <button id="hunt" title="Hunt: check at hunt speed; off = normal speed">&#127939; Hunt</button>
         <span class="iv" title="Hunt interval (each wait varies by 30 %)">every <select id="hs"></select><b class="ivt" id="hst"></b> s</span>
         <span class="iv" title="Normal interval when Hunt is off (each wait varies by 30 %)">normal <select id="ns"></select><b class="ivt" id="nst"></b> min</span>
+        <span class="iv" title="Which bid month's open time pot each check reads">Pot
+          <select id="pm" aria-label="Pot month"></select><b class="ivt" id="pmt"></b></span>
+        <span class="pmm" id="pmm" aria-live="polite"></span>
         <button class="pz" id="pz" title="Pause only if you will be in FLICA 30+ min; for a quick look just log in, the Watcher steps aside for 30 min">&#10074;&#10074; Pause</button>
         <button class="rearm" id="rearm" title="Logs into FLICA once and resumes" style="display:none">&#8634; Re-arm</button>
       </span></ha-card><div class="info" id="agi"></div>`;
@@ -323,9 +342,34 @@ class FlightWatcherClockCard extends HTMLElement {
       $("rearm").addEventListener("click", () => { if (confirm(`${this._rearmSays || "Re-arm logs into FLICA once."}\n\nRe-arm the Watcher now?`)) this._h.callService("button", "press", { entity_id: "button.flight_watcher_re_arm" }); });
       $("hs").addEventListener("change", (e) => { const v = this._wish("number.flight_watcher_hunt_check_every", e.target.value); this._h.callService("number", "set_value", { entity_id: "number.flight_watcher_hunt_check_every", value: v }); });
       $("ns").addEventListener("change", (e) => { const v = this._wish("number.flight_watcher_normal_check_every", e.target.value); this._h.callService("number", "set_value", { entity_id: "number.flight_watcher_normal_check_every", value: v }); });
+      if (!FW_PORTAL) $("pm").addEventListener("change", (e) => {  // 1.8.2: never in the portal (no such command)
+        const option = e.target.value;
+        this._pmWant = { v: option, at: Date.now() };
+        this._h.callService("select", "select_option", { entity_id: "select.flight_watcher_pot_month", option });
+      });
       this._tick = setInterval(() => this._render(), 1000);
     }
     this._render();
+  }
+  // 1.8.2 (D4): the Pot select (Home Assistant only) and the months each check reads (the state's pot_months). A pick
+  // stays shown until the select's state shows it or FC_WANT_MS pass; in the portal the mode is text
+  _pot($) {
+    const ent = this._h.states["select.flight_watcher_pot_month"], sel = $("pm"), live = !FW_PORTAL && !!ent;
+    const mode = ent && FC_POT.includes(ent.state) ? ent.state : this._attr("sensor.flight_watcher_state", "pot_mode");
+    if (sel.dataset.opts !== "1") {
+      sel.innerHTML = FC_POT.map((o) => `<option value="${o}">${o}</option>`).join("");
+      sel.dataset.opts = "1";
+    }
+    if (sel.style.display !== (live ? "" : "none")) sel.style.display = live ? "" : "none";
+    const txt = live ? "" : (FC_POT.includes(mode) ? mode : "?");
+    if ($("pmt").textContent !== txt) $("pmt").textContent = txt;
+    const w = this._pmWant;
+    if (w && (w.v === mode || Date.now() - w.at > FC_WANT_MS)) this._pmWant = null;
+    const shown = this._pmWant ? this._pmWant.v : mode;
+    if (live && FC_POT.includes(shown) && this._root.activeElement !== sel && sel.value !== shown) sel.value = shown;
+    const pm = this._attr("sensor.flight_watcher_state", "pot_months");
+    const months = fcPotText(Array.isArray(pm) ? pm : []);
+    if ($("pmm").textContent !== months) $("pmm").textContent = months;
   }
   disconnectedCallback() { clearInterval(this._tick); this._root = null; }
   _ageOnly() { return !!(this.c && this.c.mode === "age"); }
@@ -483,6 +527,7 @@ class FlightWatcherClockCard extends HTMLElement {
     $("pz").classList.toggle("on", paused);
     this._menu($("hs"), $("hst"), this._opts(FC_HUNT, "number.flight_watcher_hunt_check_every", "hunt"), hs, "number.flight_watcher_hunt_check_every");
     this._menu($("ns"), $("nst"), this._opts(FC_NORM, "number.flight_watcher_normal_check_every", "normal"), nmv, "number.flight_watcher_normal_check_every");
+    this._pot($);  // 1.8.1
     // 1.7.5 review ("Pause wins"): no Re-arm while Pause is on (the Watcher refuses it then), as Check now
     const needRearm = (["stopped_unexpected", "stopped_login_failed", "yielded", "backoff"].includes(st) || blind) && !paused;
     $("rearm").style.display = needRearm ? "" : "none";

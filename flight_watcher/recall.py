@@ -59,13 +59,38 @@ def _hm(m):
     return f"{(m // 60) % 24:02d}:{m % 60:02d}"
 
 
+def bid_month(d, details=None):
+    """1.8.2 (P2, C8): the bid month ('YYYY-MM') day d belongs to, for its package and its Over 75 answer: the
+    `period_of` (ISO day -> 'YYYY-MM') a callable details carries (the Watcher's bid_period_fn(), from the pairing
+    files' bounds: Dec 1, 2026 is November's, whose period runs Nov 1 to Dec 1, PWA Definitions 47), else the calendar
+    month (a caller with no bid periods; this module stays pure)."""
+    f = getattr(details, "period_of", None)
+    if callable(f):
+        try:
+            m = f(d.isoformat())
+            if isinstance(m, str) and re.fullmatch(r"\d{4}-\d{2}", m):
+                return m
+        except Exception:  # noqa: BLE001: the calendar month still answers
+            pass
+    return f"{d:%Y-%m}"
+
+
+def _mon(mk):
+    """'2026-11' -> 'Nov 2026' (mk itself when it is no month)."""
+    try:
+        return f"{date.fromisoformat(str(mk) + '-01'):%b %Y}"
+    except ValueError:
+        return str(mk)
+
+
 def _details(row, details):
     """The package details for the row's bid period: details is {pid: ...} (one period) or a callable period ->
     {pid: ...} (the Watcher's pkg_details_for). Pairing ids repeat across bid periods (FW-0062), so a row is never
-    judged with another month's package; a period with no package gives {}."""
+    judged with another month's package; a period with no package gives {}. 1.8.2 (P2, S4, POT-7): the period is the
+    row date's bid month (bid_month), never its calendar month when the caller knows the bid periods."""
     if callable(details):
         d = _d(row.get("date"))
-        return (details(f"{d:%Y-%m}") if d else None) or {}
+        return (details(bid_month(d, details)) if d else None) or {}
     return details or {}
 
 
@@ -439,14 +464,17 @@ def evaluate(row, me, sched_items, own_trips, blocked, details, held=None):
     """One verdict dict for one recall-list row against one line. me = {sen, seat, o75_months}. held (held_at()): the
     line as held on the list day, used instead of sched_items / own_trips; its unknown spans can only make a check
     unknown (POSSIBLE), never pass it. Without held, sched_items / own_trips are taken as complete. details: the
-    package {pid: ...} or a callable period -> {pid: ...} (_details)."""
+    package {pid: ...} or a callable period -> {pid: ...} (_details). 1.8.2 (R1): an Over 75 row whose bid month is not
+    its calendar month (Dec 1 is November's) carries o75_month, the month its reserve answer is read from."""
     out = _evaluate(row, me, sched_items, own_trips, blocked, details, held)
+    d = _d(row.get("date"))
+    mk = bid_month(d, details) if d and out.get("kind") == "o75" else ""  # 1.8.2 (C8, S8, LIVE-9): Dec 1: November's
+    if mk and mk != f"{d:%Y-%m}":  # 1.8.2 (R1): the card files the row under its calendar month and asks this one
+        out["o75_month"] = mk
     if out.get("kind") == "o75" and out["verdict"] == "MISSED":
-        d = _d(row.get("date"))
-        mk = f"{d:%Y-%m}" if d else ""
         if o75_eligible(me, mk) is None:  # 1.4.6 review: never MISSED on an assumed reserve month
             out["verdict"] = "POSSIBLE"
-            out["why"].append(f"reserve status for {d:%b %Y} unknown: Over 75 goes to Reserve Run pilots only (PWA "
+            out["why"].append(f"reserve status for {_mon(mk)} unknown: Over 75 goes to Reserve Run pilots only (PWA "
                               f"22.G.2.d); say on the tab whether you were on reserve that month")
     return out
 
@@ -465,9 +493,10 @@ def _evaluate(row, me, sched_items, own_trips, blocked, details, held=None):
         out["why"].append(f"{out['seat']} seat, you bid {me.get('seat') or 'FO'}")
         return out
     rd = _d(row.get("date"))
-    if kind == "o75" and rd and o75_eligible(me, f"{rd:%Y-%m}") is False:
+    rm = bid_month(rd, details) if rd and kind == "o75" else ""  # 1.8.2 (C8, S8, LIVE-9): of the bid month
+    if kind == "o75" and rd and o75_eligible(me, rm) is False:
         out["why"].append(f"Over 75 is for Reserve Run pilots (PWA 22.G.2.d); you said you were not on reserve in "
-                          f"{rd:%b %Y}")
+                          f"{_mon(rm)}")
         return out
     try:
         their = int(row.get("sen"))
@@ -537,7 +566,9 @@ def _evaluate(row, me, sched_items, own_trips, blocked, details, held=None):
         return out
     if not known:  # 1.4.6 review: a multi-day pairing must not shrink to one day (its later days unchecked)
         out["verdict"] = "POSSIBLE"
-        out["why"].append(f"pairing length unknown; upload the {s:%b %Y} pairings PDF or add days to the row")
+        # 1.8.2 (R3): the package that was read is the bid month's (Dec 1: November's PDF, not December's)
+        out["why"].append(f"pairing length unknown; upload the {_mon(bid_month(s, details))} pairings PDF or add days "
+                          f"to the row")
         return out
     new = _trip(out["pairing"], s, e, rep, arr, blk or None, _det(row, details).get("duties"))
     res = legality(new, own_records(sched_items, own_trips) + _gaps_as_trips(gaps))

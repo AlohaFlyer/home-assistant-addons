@@ -7,6 +7,7 @@ his state note says so plainly. FLICA is never reached: synthetic pages only ("D
 import json
 import logging
 import os
+import re
 import types
 
 import pytest
@@ -133,10 +134,15 @@ def test_a_stored_40_s_hunt_survives_a_start(mk, monkeypatch, caplog):
 # ------------------------------------------------------------------ the budget holds a 5 s hunt
 def _pilot_pages(W):
     pot_html = open(os.path.join(FX, "mobile_pot_rows.html")).read()
+    # 1.8.2: December's pot (BCID 003.153) carries December's trips (made-up H37xx), or the Watcher refuses it as a
+    # page of another month's trips and reads one pot page a check
+    dec_html = re.sub(r"<td>H36(\d\d)</td><td>(\d\d)Nov</td><td>(\d\d)Nov</td>",
+                      r"<td>H37\1</td><td>\2Dec</td><td>\3Dec</td>", pot_html)
+    assert dec_html.count("Dec</td>") == 6 and "Nov</td>" not in dec_html
 
     def ans(u):
         if "opentimepot" in u:
-            return pot_html
+            return dec_html if "BCID=003.153" in u else pot_html
         if "cmschedules" in u and "bd=1126" in u:
             return _lookup("1126")
         if "tb_" in u.lower():
@@ -158,7 +164,8 @@ def test_the_budget_holds_a_5_s_hunt_to_100_loads_an_hour_spread_over_the_hour(m
     W.S["freq"] = {"hunt_s": 5, "normal_min": 6}
     W.S["switches"] = {"hunt": True, "pause": False}
     W.FLAGS["hunt"] = True
-    W.S["pot_urls"] = {"mobile": W.MOBILE_POT,
+    W.S["pot_month"] = "Both"  # 1.8.2: both bid months' pot pages every check (Ryan, Nov 23: "set it to Both")
+    W.S["pot_urls"] = {"mobile": W.mobile_pot_url("003.152"),
                        "mobile_003.153": f"{W.BASE}/full/mobileopentimepot.cgi?BCID=003.153&From=MainMenu"}
     fl = real_fl(W, _pilot_pages(W))
     W.Flica.render = lambda self, url, wait_for=None, timeout=30000: (self.fetch(url), [])
@@ -246,7 +253,7 @@ def test_the_close_in_folder_is_an_hourly_cost_of_a_hunt_and_a_page_of_each_norm
     before) and 115 s with the folder (105 s before), still under the removed 120 s floor."""
     W = mk("pilot2")
     W.S["freq"] = {"hunt_s": 5, "normal_min": 1}
-    W.S["pot_urls"] = {"mobile": W.MOBILE_POT,
+    W.S["pot_urls"] = {"mobile": W.mobile_pot_url("003.152"),
                        "mobile_003.153": f"{W.BASE}/full/mobileopentimepot.cgi?BCID=003.153&From=MainMenu"}
     W.FLAGS["hunt"] = True
     assert W.close_in_h() == 0 and W.pot_pages() == 2
@@ -289,7 +296,8 @@ def test_a_5_s_hunt_with_the_close_in_folder_paces_under_120_s_and_holds_the_bud
     W.S["freq"] = {"hunt_s": 5, "normal_min": 6}
     W.S["switches"] = {"hunt": True, "pause": False}
     W.FLAGS["hunt"] = True
-    W.S["pot_urls"] = {"mobile": W.MOBILE_POT,
+    W.S["pot_month"] = "Both"  # 1.8.2: both bid months' pot pages every check (Ryan, Nov 23: "set it to Both")
+    W.S["pot_urls"] = {"mobile": W.mobile_pot_url("003.152"),
                        "mobile_003.153": f"{W.BASE}/full/mobileopentimepot.cgi?BCID=003.153&From=MainMenu"}
     W.S["close_in"] = {"bcid": CLOSE_IN, "verified": True, "menu_at": W.CLOCK.t}
     W.S["close_in_bcid"] = CLOSE_IN  # as close_in_check keeps it: its request list is read too

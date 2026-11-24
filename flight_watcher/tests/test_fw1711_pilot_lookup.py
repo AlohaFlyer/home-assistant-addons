@@ -233,7 +233,7 @@ def test_a_month_other_than_this_or_the_next_is_refused_with_a_status_line(load,
         with caplog.at_level(logging.INFO, logger="flight_watcher"):
             p = _ask(W, sent, emp="10001", name="Doe, Jane", month=month)
         assert not W.S.get("pilot_req")
-        assert p["status"] == "Only Nov 2026 and Dec 2026 can be looked up (this month and the next, HST)."
+        assert p["status"] == "Only Nov 2026 and Dec 2026 can be looked up (this bid month and the next, HST)."
         assert (p["emp"], p["name"], p["month"]) == ("10001", "Doe, Jane", "")
         lines = [r.getMessage() for r in caplog.records if "pilot lookup" in r.getMessage()]
         assert [x for x in lines if "refused" in x] == ["pilot lookup refused: month not this HST month or the next"]

@@ -378,8 +378,31 @@ def test_an_automatic_idea_never_pushes_never_drafts_and_never_feeds_auto_swap(W
     assert len(_pubs(W, "event/swap")) == 1
 
 
+def test_a_month_not_read_keeps_its_pushed_ideas_and_a_first_read_pushes_none(W):
+    """1.8.2 review (alerts-swap-idea-repush): swap_scan(rows, read, quiet). A month whose read this check was its first
+    (quiet, D3) notes its ideas without a push; a month not read this check (a refused page, a month the select left)
+    keeps its ideas in swap_seen until its trip starts, so nothing is pushed again when it is read again."""
+    W.S["trade_away"] = [K1]
+    keys = sorted(f"{p}|20Nov>{K1}" for p in ("H9101", "H9103"))
+    W.swap_scan([P1, P2, P3, P4], read={"2026-11"}, quiet={"2026-11"})
+    assert _pubs(W, "event/swap") == [] and _pubs(W, "event/swap_test") == [] and W.S["swap_seen"] == keys
+    assert {i["pairing"] for i in _sensor(W)["ideas"]} == {"H9101", "H9103"}  # still on the sensor
+    W.swap_scan([], read=set())  # November refused this check: its ideas are kept
+    assert W.S["swap_seen"] == keys and W.S["swap_seen_month"] == {k: "2026-11" for k in keys}
+    W.swap_scan([P1, P2, P3, P4], read={"2026-11"})  # read again: nothing pushed again
+    assert _pubs(W, "event/swap") == []
+    W.swap_scan([P1, P2, P4], read={"2026-11"})  # read, and H9103 is gone: it pushes again when it comes back
+    assert W.S["swap_seen"] == [f"H9101|20Nov>{K1}"]
+    W.swap_scan([P1, P2, P3, P4], read={"2026-11"})
+    assert [p["pairing"] for p in _pubs(W, "event/swap")] == ["H9103"]
+    W.CLOCK["now"] = datetime(2026, 11, 21, 12, 0)  # their trips started: no longer kept for a month not read
+    W.swap_scan([], read=set())
+    assert W.S["swap_seen"] == [] and W.S["swap_seen_month"] == {}
+
+
 def test_swap_scan_takes_no_flica_client_and_loads_nothing(W):
-    assert list(inspect.signature(W.swap_scan).parameters) == ["pot_rows"]
+    # 1.8.2: the pot months read this check and those read for the first time (no FLICA client either)
+    assert list(inspect.signature(W.swap_scan).parameters) == ["pot_rows", "read", "quiet"]
     W.swap_scan([P1, P2, P3, P4])  # count_fetch would raise
     assert not [t for t, _p, _r in W.FAKE.msgs if "fetch" in t]
 

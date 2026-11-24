@@ -1,7 +1,9 @@
 """1.8.1: a later month follows FLICA's schedule stamp (Hark for Ryan, Nov 23, 2026: "FW is not updating his December
 schedule completely"). FLICA's "Last Updated" stamp covers the whole schedule, so when the current month's page (read
 every 30 min) carries a newer stamp than a later month's copy, that month is read again on the same read, once per
-stamp change, inside the read's two loads. Synthetic pages and names only."""
+stamp change, inside the read's two loads. 1.8.2 (merge): the rule is one more early re-read signal: stamp_marks marks
+the month (S sched_stale), it takes the read's spare load first and never forces a read of its own; 1.8.2's own cadence
+(a future month fresh 30 min, a closed one a day) and totals_first decide the rest. Synthetic pages and names only."""
 import json
 import logging
 import sys
@@ -106,7 +108,7 @@ def test_december_follows_a_trade_on_the_next_read(W, caplog):
     assert ("H3613", "2026-12-04") in _starts(W, "2026-12")
     assert W.S["sched_stamp"] == S0 and W.S["schedule"]["2026-12"]["cur_stamp"] == S0
     assert all(1.5 <= s <= 3.5 for s in W.SLEEPS)  # every load paced
-    # nothing moved: December is not loaded again (the 6 h copy holds)
+    # nothing moved: December is not loaded again (its read is fresh, 1.8.2: 30 min)
     assert len(_read(W, fl)) == 1
     # FLICA moves December; November's page carries the new stamp, its own trips unchanged
     fl.pages.update(_pages(S1, DEC_06, S1))
@@ -114,8 +116,12 @@ def test_december_follows_a_trade_on_the_next_read(W, caplog):
     assert len(got) == 2 and "bd=1226" in got[1]
     assert ("H3613", "2026-12-06") in _starts(W, "2026-12") and ("H3613", "2026-12-04") not in _starts(W, "2026-12")
     assert W.S["schedule"]["2026-12"]["cur_stamp"] == S1 and W.S["schedule"]["2026-12"]["updated"] == S1
-    assert "(read again: FLICA's schedule stamp moved)" in caplog.text
-    assert "schedule 2026-12 changed: added ['H3613 2026-12-06'], removed ['H3613 2026-12-04']" in caplog.text
+    # 1.8.2 (merge): the mark's why is logged when it is made and on the month's line; sched_change logs the change
+    assert "schedule 2026-12: read early (FLICA's schedule stamp moved)" in caplog.text
+    assert "via Schedule Lookup (bd=1226) (FLICA's schedule stamp moved)" in caplog.text
+    assert "SCHEDULE changed {'month': '2026-12'" in caplog.text
+    assert "'added': ['H3613 2026-12-06'], 'removed': ['H3613 2026-12-04']" in caplog.text
+    assert "2026-12" not in W.S["sched_stale"]  # the mark is served by the read
     sched = json.loads(W.MQ.last("flight_watcher/schedule"))
     assert ["H3613", "2026-12-06"] in [[i["trip"], i["start"]] for i in sched["months"]["2026-12"]["items"]]
     assert "cur_stamp" not in sched["months"]["2026-12"]  # the sensor's month keys are unchanged
@@ -164,7 +170,7 @@ def test_past_months_back_off_and_unlisted_months_are_not_stamp_reads(W):
     assert not W.other_month_stale("2026-12", "2026-11")
 
 
-def test_mobile_path_gives_the_last_load_to_the_moved_month_only_when_this_month_did_not_move(W):
+def test_mobile_path_gives_the_last_load_to_the_stamp_moved_month(W):
     mob = (FX / "mobile_schedule_nov.html").read_text().replace("<p>Block 92.33</p><p>Credit 121.48</p><p>YTD 592.22</p>", "")
     m_stamp = "Nov 1, 2026 09:54:34"
     assert m_stamp in mob
@@ -183,14 +189,19 @@ def test_mobile_path_gives_the_last_load_to_the_moved_month_only_when_this_month
     got = _read(W, fl)
     assert len(got) == 2 and "bd=1226" in got[1]
     assert ("H3613", "2026-12-06") in _starts(W, "2026-12") and W.S["schedule"]["2026-11"]["totals"] == nov_tot
-    # the stamp moves and November's own trips moved: its Block / Credit are read; December waits for a load
-    fl.pages["mobileschedule"] = mob.replace(m_stamp, "Nov 23, 2026 05:37:39")
+    # the stamp moves and November's own trips moved: its Block / Credit are read on this read (main's rule, kept in
+    # the merge); December's stamp mark waits, unforced, and takes the next read's spare load
+    fl.pages["mobileschedule"] = mob.replace(m_stamp, S2)
+    fl.pages["bd=1126"] = _lookup("1126", ("1126", "1226"), NOV, S2, block="99.59", credit="111.11")
     W.S["schedule"]["2026-11"]["items"] = W.S["schedule"]["2026-11"]["items"][1:]
     W.LOOKUP_PAGE.update(bd="", html="", at=0)
     got = _read(W, fl)
-    assert len(got) == 2 and "bd=1126" in got[1]
-    assert W.S["schedule"]["2026-12"]["cur_stamp"] != "Nov 23, 2026 05:37:39"
+    assert len(got) == 2 and "bd=1126" in got[1] and W.S["schedule"]["2026-11"]["totals"]["credit"] == "111:11"
+    assert W.S["schedule"]["2026-12"]["cur_stamp"] != S2
     assert W.later_months_stale("2026-11") == ["2026-12"]  # still owed: the next read with a load left takes it
+    got = _read(W, fl)
+    assert len(got) == 2 and "bd=1226" in got[1]
+    assert W.S["schedule"]["2026-12"]["cur_stamp"] == S2 and W.later_months_stale("2026-11") == []
 
 
 # ------------------------------------------------------------------ 1.8.1 review fixes
@@ -211,22 +222,31 @@ def _three_on_file(W, mobile=False):
     return fl
 
 
-def test_a_stale_only_pass_loads_only_the_stale_month_and_keeps_the_6h_clock(W):
+def test_a_stamp_read_loads_only_the_moved_month_and_keeps_the_past_months_clock(W):
+    """1.8.2 (merge): the stamp marks only the later month. October (a closed month, read once a day) is due and
+    already waited a read (late), yet the stamp read loads December alone and leaves October's clock (read_ts) as it
+    was; October keeps its own clock and is read at the next read, so it is never starved."""
     fl = _three_on_file(W)
-    W.S["schedule"]["2026-10"]["read_ts"] -= 6 * 3600 + 60  # October is past its own 6 h
-    W.S["sched_prev_at"] = W.time.time() - 3600  # the pass clock is not due
-    before = W.S["sched_prev_at"]
+    late = 24 * 3600 + 31 * 60  # past SCHED_PAST_FRESH_S by over SCHED_FUTURE_FRESH_S: due and late
+    W.S["schedule"]["2026-10"]["read_ts"] -= late
+    oct_ts = W.S["schedule"]["2026-10"]["read_ts"]
+    assert W.other_month_due("2026-10", "2026-11") == "due" and W.other_month_late("2026-10", "2026-11")
     fl.pages.update(_pages(S1, DEC_06, S1, months=("1026", "1126", "1226")))
     got = _read(W, fl)
-    assert len(got) == 2 and "bd=1226" in got[1] and not [u for u in got if "bd=1026" in u]
+    assert len(got) == 2 and "bd=1126" in got[0] and "bd=1226" in got[1]
     assert ("H3613", "2026-12-06") in _starts(W, "2026-12")
-    assert W.S["sched_prev_at"] == before  # the 6 h clock of the other months is left as it was
-    # the review's case: October still fresh, so the pass would have counted as complete and restarted the clock
-    W.S["schedule"]["2026-10"]["read_ts"] = W.time.time() - 5 * 3600
+    assert W.S["schedule"]["2026-10"]["read_ts"] == oct_ts  # October's clock is left as it was
+    got = _read(W, fl)  # the next read: October, on its own clock
+    assert len(got) == 2 and "bd=1026" in got[1] and W.S["schedule"]["2026-10"]["read_ts"] != oct_ts
+    # the stamp moves again (December back to the 4th) with October late again: December alone, then October
+    W.S["schedule"]["2026-10"]["read_ts"] -= late
+    oct_ts = W.S["schedule"]["2026-10"]["read_ts"]
     fl.pages.update(_pages(S2, DEC_04, S2, months=("1026", "1126", "1226")))
     got = _read(W, fl)
     assert len(got) == 2 and "bd=1226" in got[1] and ("H3613", "2026-12-04") in _starts(W, "2026-12")
-    assert W.S["sched_prev_at"] == before
+    assert W.S["schedule"]["2026-10"]["read_ts"] == oct_ts and "2026-12" not in W.S["sched_stale"]
+    got = _read(W, fl)
+    assert len(got) == 2 and "bd=1026" in got[1] and W.S["schedule"]["2026-10"]["read_ts"] != oct_ts
 
 
 def test_a_stale_month_whose_load_fails_waits_its_back_off(W):
@@ -251,31 +271,28 @@ def test_a_stale_month_whose_load_fails_waits_its_back_off(W):
     assert "2026-12" not in W.S["sched_other_fail"]
 
 
-def test_mobile_path_this_months_own_change_reads_its_totals_whatever_the_other_months_say(W):
-    """The review's case: the pass clock is closed, October is past its own 6 h, December is stale and November's own
-    trips moved: November's Block / Credit are read (as in 1.8.0), never the stored ones."""
+@pytest.mark.parametrize("oct_late", [False, True])
+def test_mobile_path_this_months_own_change_reads_its_totals_at_once_then_the_stamp_month(W, oct_late):
+    """The 1.8.1 review's case (main's rule kept in the merge): December is stale by the stamp and November's own
+    trips moved. FLICA's stamp is the whole schedule's, so his own change marks December too, but the change that
+    explains the stamp is November's own: November's Block / Credit are loaded on this read (his credit line is right
+    at once), and December's stamp mark waits, unforced, for the next read's spare load, before a late October."""
     fl = _three_on_file(W, mobile=True)
-    W.S["schedule"]["2026-10"]["read_ts"] -= 6 * 3600 + 60
-    W.S["sched_prev_at"] = W.time.time() - 3600
+    if oct_late:
+        W.S["schedule"]["2026-10"]["read_ts"] -= 24 * 3600 + 31 * 60
     fl.pages["mobileschedule"] = fl.pages["mobileschedule"].replace(S0, S1)
     fl.pages["bd=1126"] = _lookup("1126", ("1026", "1126", "1226"), NOV, S1, block="99.59", credit="111.11")
     W.S["schedule"]["2026-11"]["items"] = W.S["schedule"]["2026-11"]["items"][1:]  # November's own trips moved
     W.LOOKUP_PAGE.update(bd="", html="", at=0)
     got = _read(W, fl)
-    assert "bd=1126" in got[1] and W.S["schedule"]["2026-11"]["totals"]["credit"] == "111:11"
-
-
-def test_mobile_path_a_trip_that_ends_later_is_this_months_change(W):
-    """Same trips and starts but a trip now ends a day later: November changed, so its totals are read."""
-    fl = _three_on_file(W, mobile=True)
-    fl.pages["mobileschedule"] = fl.pages["mobileschedule"].replace(S0, S1)
-    fl.pages["bd=1126"] = _lookup("1126", ("1026", "1126", "1226"), NOV, S1, block="99.59", credit="111.11")
-    it = W.S["schedule"]["2026-11"]["items"][0]
-    it["end"] = "2026-12-31"  # the stored copy differs from the page in one trip's end only
-    W.LOOKUP_PAGE.update(bd="", html="", at=0)
+    assert len(got) == 2 and "bd=1126" in got[1] and W.S["schedule"]["2026-11"]["totals"]["credit"] == "111:11"
+    assert W.sched_stale()["2026-12"]["why"] == W.SCHED_STAMP_WHY and W.sched_stale()["2026-12"]["forced"] is True
     got = _read(W, fl)
-    assert "bd=1126" in got[1] and W.S["schedule"]["2026-11"]["totals"]["credit"] == "111:11"
-    assert W.later_months_stale("2026-11") == ["2026-12"]  # December waits for a read with a load left
+    assert len(got) == 2 and "bd=1226" in got[1] and "2026-12" not in W.sched_stale()
+    assert W.later_months_stale("2026-11") == []
+    if oct_late:
+        got = _read(W, fl)
+        assert len(got) == 2 and "bd=1026" in got[1]
 
 
 def test_a_stale_only_pass_that_raises_leaves_the_clock_and_the_fallback_alone(W):
@@ -328,3 +345,90 @@ def test_a_good_schedule_lookup_page_ends_a_run_of_failed_ones(W):
     assert W.S["breakers"]["lookup"]["fails"] == 2
     _read(W, fl)  # the mobile page and November's totals on Schedule Lookup
     assert int((W.S["breakers"].get("lookup") or {}).get("fails") or 0) == 0
+
+
+# ------------------------------------------------------------------ 1.8.2 (merge): the stamp rule as a mark
+def test_a_stamp_mark_never_forces_a_read_and_leaves_triggers_their_own(W, caplog):
+    """The stamp's mark takes a read's spare load first but never forces a read of its own (sched_stale_force,
+    defer_mark), is made once while a mark is in hand, and a trigger's evidence for the month still forces its read."""
+    caplog.set_level(logging.INFO)
+    fl = _three_on_file(W)
+    W.S["sched_stamp"] = S1  # a current month read moved the stamp; December was read under S0
+    assert W.stamp_marks("2026-11") == ["2026-12"]
+    mark = W.S["sched_stale"]["2026-12"]
+    assert mark["why"] == W.SCHED_STAMP_WHY and mark["forced"] is True
+    assert "schedule 2026-12: read early (FLICA's schedule stamp moved)" in caplog.text
+    assert W.stamp_marks("2026-11") == []  # the mark in hand stands: no second one
+    assert not W.sched_stale_force(dry=True) and not W.sched_stale_force()  # no read of its own
+    assert W.defer_mark("2026-12") is False and W.S["sched_stale"]["2026-12"]["forced"] is True
+    assert W.next_other_month("2026-11") == ("2026-12", "marked")  # the read's spare load goes to it first
+    # his own Dec 4 seat goes empty: the trigger marks December itself and forces the read the stamp's mark did not
+    W.seat_trigger("H3613|2026-12-04", "FO 2", "")
+    assert W.S["sched_stale"]["2026-12"]["why"].startswith("own trip H3613 2026-12-04")
+    assert W.sched_stale_force(dry=True)
+    # a month backing off after a failed read is not marked by the stamp
+    W.S["sched_stale"].clear()
+    W.S["sched_other_fail"] = {"2026-12": {"n": 1, "next": W.time.time() + 3600}}
+    assert W.stamp_marks("2026-11") == [] and "2026-12" not in W.S["sched_stale"]
+    W.S["sched_other_fail"] = {}
+    # the read serves the mark: December read under the new stamp, then nothing to mark
+    fl.pages.update(_pages(S1, DEC_06, S1, months=("1026", "1126", "1226")))
+    got = _read(W, fl)
+    assert len(got) == 2 and "bd=1226" in got[1] and W.S["schedule"]["2026-12"]["cur_stamp"] == S1
+    assert "2026-12" not in W.S["sched_stale"] and W.stamp_marks("2026-11") == []
+
+
+@pytest.mark.parametrize("mobile", [False, True])
+@pytest.mark.parametrize("how", ["press", "trigger"])
+def test_a_press_or_a_trigger_right_after_a_stamp_move_is_read_in_its_own_forced_read(W, mobile, how):
+    """Merge review M1: Ryan presses refresh on October (or a CrewTrac mismatch marks it) because his schedule
+    changed, so FLICA's stamp moved too. The forced read's current month marks December by the stamp; the forced read's
+    spare load still goes to October (a stamp mark goes after a press's or a trigger's), so the press is answered in
+    that read (the card waits 3 min). December's stamp mark takes the next read's spare load."""
+    fl = _three_on_file(W, mobile=mobile)
+    months = ("1026", "1126", "1226")
+    fl.pages.update(_pages(S1, DEC_06, S1, months=months))
+    fl.pages["bd=1026"] = _lookup("1026", months, [("05", "H3611", "LAX", "20261005")], S1)
+    if mobile:
+        fl.pages["mobileschedule"] = fl.pages["mobileschedule"].replace(S0, S1)
+    if how == "press":
+        W.schedule_refresh_cmd('{"month": "2026-10"}')
+        assert W.S["sched_stale"]["2026-10"]["why"] == W.SCHED_REFRESH_WHY
+    else:
+        W.crewtrac_trigger({"pulled_at": "snap-1"}, [], [{"month": "2026-10", "ok": False}])
+        assert W.S["sched_stale"]["2026-10"]["why"].startswith("the CrewTrac check differs")
+    assert W.sched_stale_force()  # the check runs the forced read
+    got = _read(W, fl)
+    assert len(got) == 2 and "bd=1026" in got[1], got
+    assert ("H3611", "2026-10-05") in _starts(W, "2026-10") and "2026-10" not in W.S["sched_stale"]
+    if how == "press":
+        assert W.S["sched_refresh"]["state"] == "read"
+    mark = W.S["sched_stale"]["2026-12"]  # the stamp's mark waits for a read with a load left
+    assert mark["why"] == W.SCHED_STAMP_WHY and mark["forced"] is True and not W.sched_stale_force(dry=True)
+    got = _read(W, fl)
+    assert len(got) == 2 and "bd=1226" in got[1] and ("H3613", "2026-12-06") in _starts(W, "2026-12")
+    assert "2026-12" not in W.S["sched_stale"] and W.S["schedule"]["2026-12"]["cur_stamp"] == S1
+
+
+def test_mobile_path_totals_take_the_spare_load_and_the_stamp_mark_waits_unforced(W):
+    """Merge review T3: on the mobile path with November's Block / Credit 3 h old and December read at the read
+    before, totals_first gives the spare load to the totals although the stamp marked December; defer_mark leaves the
+    stamp's mark as it is (forced True: no read of its own, no wake), and the next read serves it."""
+    fl = _three_on_file(W, mobile=True)
+    W.S["schedule"]["2026-12"]["read_ts"] = W.S["sched_checked_at"]  # December came in the read before this one
+    W.S["sched_totals"]["at"] = W.time.time() - 3 * 3600  # November's Block / Credit 3 h old
+    wake = W.WAKE_DUE["at"]
+    fl.pages["mobileschedule"] = fl.pages["mobileschedule"].replace(S0, S1)
+    fl.pages.update(_pages(S1, DEC_06, S1, months=("1026", "1126", "1226")))
+    fl.pages["bd=1126"] = _lookup("1126", ("1026", "1126", "1226"), NOV, S1, block="99.59", credit="111.11")
+    W.LOOKUP_PAGE.update(bd="", html="", at=0)
+    got = _read(W, fl)
+    assert len(got) == 2 and "bd=1126" in got[1], got  # the totals
+    assert W.S["schedule"]["2026-11"]["totals"]["credit"] == "111:11"
+    mark = W.S["sched_stale"]["2026-12"]
+    assert mark["why"] == W.SCHED_STAMP_WHY and mark["forced"] is True
+    assert W.WAKE_DUE["at"] == wake and not W.sched_stale_force(dry=True)
+    assert W.S["schedule"]["2026-12"]["cur_stamp"] == S0
+    got = _read(W, fl)
+    assert len(got) == 2 and "bd=1226" in got[1] and ("H3613", "2026-12-06") in _starts(W, "2026-12")
+    assert "2026-12" not in W.S["sched_stale"] and W.S["schedule"]["2026-12"]["cur_stamp"] == S1

@@ -574,18 +574,21 @@ def render_month(month, insts, rows, now_s, held=None, flags=None):
     """Markdown for one month: header, then one section per pilot (sorted by name) with a table of trips.
     FW-0016: pages read with no crew names are counted apart, and a held bid period (held_periods) says so.
     FW-0059: a trip of a pilot shown on two overlapping trips (the stored overlap flags) says so in its Pairing cell,
-    with the other trip and where the re-read stands, and the header counts them."""
-    n, ok, pct = coverage(insts, rows, month)
-    fails = sum(1 for k, it in insts.items() if it["month"] == month and (rows.get(k) or {}).get("status") == "fail")
-    empty = sum(1 for k, it in insts.items() if it["month"] == month and (rows.get(k) or {}).get("status") == "empty")
+    with the other trip and where the re-read stands, and the header counts them. 1.8.2 (T11): the month's trips are
+    those of its calendar month and of its bid period (period_of), so a Dec 1 trip of November's period (Nov 1 to
+    Dec 1) is in November's file as well as December's."""
     held = held_periods(insts, rows) if held is None else held
-    waiting = sorted({period_of(it) for it in insts.values() if it["month"] == month and period_of(it) in held})
+    insts = {k: it for k, it in insts.items() if it["month"] == month or period_of(it) == month}
+    n, ok, pct = coverage(insts, rows)
+    fails = sum(1 for k in insts if (rows.get(k) or {}).get("status") == "fail")
+    empty = sum(1 for k in insts if (rows.get(k) or {}).get("status") == "empty")
+    waiting = sorted({period_of(it) for it in insts.values() if period_of(it) in held})
     marks = overlap_marks(flags, rows)
-    flagged = [f for f in (flags or {}).values() if any((insts.get(k) or {}).get("month") == month for k in f.get("keys") or [])]
+    flagged = [f for f in (flags or {}).values() if any(k in insts for k in f.get("keys") or [])]
     pilots = {}
     for k, it in insts.items():
         r = rows.get(k) or {}
-        if it["month"] != month or r.get("status") != "ok":
+        if r.get("status") != "ok":
             continue
         for c in r.get("crew") or []:
             if c.get("pos") not in PILOT_POS or c.get("name") == "OPEN":

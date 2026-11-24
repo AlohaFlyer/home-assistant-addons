@@ -113,6 +113,12 @@ def test_every_entity_a_bundled_card_reads_is_exported(pilot):
         for eid in re.findall(r"\b[a-z_]+\.%s_[a-z0-9_]+" % P, text):
             if eid not in ok:
                 missing.add(eid)
+    # 1.8.2: the clock card's Pot month select is off every portal (roles.ENTITY_OFF_PORTAL, no portal command): the
+    # card draws it only outside the portal (FW_PORTAL false) and shows the months from sensor.<prefix>_state
+    pm = f"select.{P}_pot_month"
+    assert "pot_month" in roles.ENTITY_OFF_PORTAL and pm in missing and pm not in ok
+    assert [fn for fn, text in W.portal_cards().items() if pm in text] == ["flight-watcher-clock-card-pilot2.js"]
+    missing.discard(pm)
     assert missing <= _admin_only(W), sorted(missing - _admin_only(W))
     # the schedule card's admin-only drop marks and (1.7.19) its admin-only paycheck model, never read for a pilot
     # and (1.7.22) its admin-only CrewTrac check
@@ -130,8 +136,16 @@ def test_every_call_service_maps_to_the_manifest(pilot):
         for call in calls:
             dom, svc, data = call.group(1), call.group(2).strip('"'), call.group(3)
             seen += 1
+            if dom == "select" and f"select.{P}_pot_month" in data:  # 1.8.2: drawn only outside the portal
+                assert "clock-card" in fn and "if (!FW_PORTAL) $(\"pm\").addEventListener" in text
+                assert "pot_month/set" not in roles.PORTAL_CMDS and roles.portal_sub("pot_month/set") is None
+                continue
             if dom == "mqtt":
                 lit = re.search(r'topic: "%s/([a-z_/]+)"' % P, data)
+                if lit and lit.group(1) == "schedule/refresh":  # 1.8.2: the refresh button, never drawn in the portal
+                    assert "schedule-card" in fn and 'if (FW_PORTAL) return "";' in text
+                    assert roles.portal_sub("schedule/refresh") is None and "schedule/refresh" in roles.NOT_ON_PORTAL
+                    continue
                 if lit:
                     assert lit.group(1) in subs or lit.group(1) in ("drop/set", "recall/set"), (fn, lit.group(1))
                     if lit.group(1) == "drop/set":

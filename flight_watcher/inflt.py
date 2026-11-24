@@ -202,10 +202,22 @@ def fetch_schedule(fl, base, emp, bd, cur_bd, log, key):
     return None
 
 
-def run(fl, db, limit, log, local_now, base, hst, on_sched=None):
+def run(fl, db, limit, log, local_now, base, hst, on_sched=None, period_of=None):
     """Three lookups per check: look the picker's month up, read the pairings around the pickup day,
     decide. 1.7.9: a pickup whose picker is not known is looked up for each pilot it names (his own verdict). Returns True when any verdict was written. FW-0056: on_sched(items) gets each picker month read
-    ([{trip, start}]), so the crew index reads those trips too."""
+    ([{trip, start}]), so the crew index reads those trips too. 1.8.2 (LIVE-10): period_of(iso) gives a day's bid
+    month ('YYYY-MM'): the picker's month is the pickup day's bid month (a Dec 1 pickup reads his November page,
+    bd=1126, whose trip runs Nov 29 to Dec 1). FLICA's default page (no bd) is tried first only for a pickup whose bid
+    month is the calendar month of today, so never on Dec 1 (a pickup on or before it is November's, or earlier), when
+    the default page may show either month. None: the calendar month, as before."""
+
+    def bid_bd(d):
+        try:
+            k = str(period_of(d.isoformat()) if period_of else "")
+        except Exception:  # noqa: BLE001: the calendar month still answers
+            k = ""
+        return f"{k[5:7]}{k[2:4]}" if re.fullmatch(r"\d{4}-\d{2}", k) else f"{d.month:02d}{d.year % 100:02d}"
+
     changed_early = False
     if db.get("score_email_v") != 1:  # 0.5.6 one-shot: score the email-caught pickups recorded before 0.5.6
         for k in db.unscored_pickups():
@@ -234,6 +246,7 @@ def run(fl, db, limit, log, local_now, base, hst, on_sched=None):
     if not todo:
         return changed_early
     cur = local_now()
+    # 1.8.2 (G1-TEST-1): the default page only for a pickup of the calendar month (on Dec 1 none: theirs is 1126)
     cur_bd = f"{cur.month:02d}{cur.year % 100:02d}"
     cache, n, changed = {}, 0, changed_early
     for key, emp, gone, tries in todo:
@@ -242,7 +255,7 @@ def run(fl, db, limit, log, local_now, base, hst, on_sched=None):
         n += 1
         try:
             d = datetime.fromisoformat(gone.replace("Z", "+00:00")).astimezone(hst)
-            bd = f"{d.month:02d}{d.year % 100:02d}"
+            bd = bid_bd(d.date())  # 1.8.2 (LIVE-10): the pickup day's bid month
             ck = (emp, bd)
             if ck not in cache:
                 if n > 1:

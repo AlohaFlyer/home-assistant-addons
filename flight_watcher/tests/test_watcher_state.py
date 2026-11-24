@@ -259,7 +259,10 @@ def test_swap_mode_is_a_read_only_sensor_and_the_select_is_removed(W):
     sensor = json.loads(cfgs["homeassistant/sensor/flight_watcher/swap_mode/config"])
     assert sensor["default_entity_id"] == "sensor.flight_watcher_swap_mode"
     assert "command_topic" not in sensor and "options" not in sensor
-    assert not any(t.startswith("homeassistant/select/") and p for t, p in cfgs.items())
+    # 1.8.2 (D2): the one select left is the Pot month (This month, Next month, Both); never a swap mode
+    sel = {t: json.loads(p) for t, p in cfgs.items() if t.startswith("homeassistant/select/") and p}
+    pm = "homeassistant/select/flight_watcher/pot_month/config"
+    assert list(sel) == [pm] and sel[pm]["options"] == ["This month", "Next month", "Both"]
     W.publish_swap_mode(c)
     attr = json.loads(c.last("flight_watcher/swap_mode/attr"))
     assert attr["sends"] is False and "draft only, never sent" in attr["note"]
@@ -297,7 +300,9 @@ def test_state_attr_carries_role_and_features(W, monkeypatch):
     W.set_machine("idle", "ok")
     a = json.loads(W.MQ.last("flight_watcher/state_attr"))
     assert a["role"] == "admin" and a["features"] == list(W.ROLES.FEATURES) and a["instance"] == ""
-    assert a["version"] == W.VERSION and set(a) == {"note", "version", "since", "instance", "doh", "role", "features"}
+    assert a["version"] == W.VERSION and set(a) == {"note", "version", "since", "instance", "doh", "role", "features",
+                                                    "pot_mode", "pot_months"}  # 1.8.2 (D4): the clock card's Pot
+    assert a["pot_mode"] == "This month" and [m["month"] for m in a["pot_months"]] == [W.this_month_key()]
     monkeypatch.setattr(W, "INSTANCE", "pilot2")
     W.set_machine("needs_settings", "send username and password")
     a = json.loads(W.MQ.last("flight_watcher/state_attr"))

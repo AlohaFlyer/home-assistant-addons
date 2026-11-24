@@ -471,43 +471,130 @@ def award_start(cols, month, start=None):
     return date(y, mo, d0)
 
 
-def parse_award(text, emp, details, month, pstart=None):
+AWARD_PARSER = 2  # 1.8.2 (T5): the award parser's version; the Watcher reads an award text copy again when it changes
+MON3 = [m[:3].title() for m in MONTHS]
+CARRY_MARK_RE = re.compile(r"\b(" + "|".join(MON3) + r")(\d{1,2})\b")  # 'Nov30': a carry-in's first day
+REL_TIME_RE = re.compile(r"(?<![\d:])\d{1,2}:\d{2}(?![\d:])")
+
+
+def _rel_days(dt):
+    try:
+        return int((dt or {}).get("rel_days") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def parse_award(text, emp, details, month, pstart=None, prev_details=None):
     """One pilot's awarded line from the PBS bid-run award: {items, days, totals, updated, trips} in the shape
     the Watcher stores a FLICA month (items {trip,start,end,lay}; days [[iso, code, lay]]), trips carrying
     block / credit / seat / duties from the pairing package. None when the pilot is not in the award.
     FW-0015: the date header runs from the bid period's first day (Dec 2 in December), one column per day;
     `pstart` is the package's period start when known (award_start). ValueError when no header is found or the
-    pilot's line is cut off by the end of the text (1.7.2)."""
+    pilot's line is cut off by the end of the text (1.7.2).
+    1.8.2 (T5, LIVE-3): a trip carried in from the bid period before prints in FLICA's C/IN column, left of the first
+    day column, with its first day ('Nov30') under it on the line below the pilot's number. It is dated from that
+    marker (else from its release day), its details are the previous period's package's (`prev_details`, never this
+    period's same-numbered pairing) and period_credit is its Cr row share (this period's part). With no marker, a token
+    there is a carry-in only when the previous period's package has it and its release does not print where this
+    period's same-numbered pairing releases (else it is that first-day trip, squeezed left; the award is read again
+    when the previous package comes).
+    Every other pairing (and VA) stays on 1.8.1's nearest day column unless its release time, which prints under its
+    last day (start + rel_days), is not under that day and is under the day of the column span that holds it (the cell
+    after the previous header): a token squeezed right of the Dec 2 header whose release prints under Dec 5 is a Dec 3
+    trip. A line 1.8.1 read right (its releases where its days say) reads the same."""
     lines = text.splitlines()
     i = next((k for k, ln in enumerate(lines) if re.match(rf"^\d{{5}}\s*/\s*{emp}\b", ln)), None)
     if i is None:
         return None
     if i + 4 >= len(lines):  # 1.7.2: its credit, pairing and seat lines are the next four; a line cut off by the end of
         raise ValueError("the pilot's line is cut off at the end of the award")  # the text was an IndexError
-    cols = next((c for c in (_day_header(lines[k]) for k in range(i, -1, -1)) if c), None)
-    if not cols:
+    hk = next((k for k in range(i, -1, -1) if _day_header(lines[k])), None)
+    if hk is None:
         raise ValueError("no date header (a line of day numbers) above the pilot's line")
+    cols = _day_header(lines[hk])
     y, mo = int(month[:4]), int(month[5:7])
     first = award_start(cols, month, pstart)
+    hdr = [c[0] for c in cols]
 
-    def day_at(pos):
-        c = min(cols, key=lambda c: abs(c[0] - pos))
-        return first + timedelta(days=cols.index(c))  # one column per day from the period's first day
+    def near(pos):  # the column nearest a position (a release time prints under its day)
+        return min(range(len(hdr)), key=lambda k: abs(hdr[k] - pos))
+
+    def span(pos):  # 1.8.2 (T5): the column whose cell holds a position: the cell after the previous header
+        return next((k for k, h in enumerate(hdr) if h >= pos), len(hdr) - 1)
+
+    # 1.8.2 (T5): the C/IN column (the weekday line above the day numbers), the carry-in markers and the release times
+    cin = next((m.start() for k in range(max(0, hk - 2), hk + 1) for m in re.finditer(r"C/IN\b", lines[k])), None)
+    marks = [(m.start(), m.group(1), int(m.group(2))) for m in CARRY_MARK_RE.finditer(lines[i + 1])]
+    rels = [[m.start(), near(m.start()), False] for m in REL_TIME_RE.finditer(lines[i + 1])]
+
+    def rel_on(k, take=False, within=None):  # a release time not yet used printed under day k (0 = the first day)
+        r = next((r for r in rels if r[1] == k and not r[2] and (not within or within[0] <= r[0] < within[1])), None)
+        if r and take:
+            r[2] = True
+        return r is not None
+
+    def carry_day(pos):  # a 'Nov30' marker under the token: that day, when it is before the period
+        for p, mon, d in marks:
+            if abs(p - pos) <= 3:
+                mm = MON3.index(mon) + 1
+                try:
+                    v = date(first.year - (1 if mm > first.month else 0), mm, d)
+                except ValueError:
+                    return None
+                return v if first - timedelta(days=15) <= v < first else None
+        return None
 
     ids, seats, crs = lines[i + 3], lines[i + 4], lines[i + 2]
     items, trips = [], {}
-    for m in re.finditer(r"\b(H\d{4}[A-Z]?|VA)\b", ids):
-        start = day_at(m.start())
-        if m.group(1) == "VA":
-            cr = re.search(r"(\d{3}):(\d{2})", crs[m.start():m.start() + 10])
+    toks = list(re.finditer(r"\b(H\d{4}[A-Z]?|VA)\b", ids))
+    for j, m in enumerate(toks):
+        tok, pos = m.group(1), m.start()
+        if tok == "VA":
+            start = first + timedelta(days=near(pos))  # 1.8.2 (G4A-1): 1.8.1's nearest column (no release to check)
+            cr = re.search(r"(\d{3}):(\d{2})", crs[pos:pos + 10])
             n = max(1, (int(cr.group(1)) * 60 + int(cr.group(2))) // 240) if cr else 1  # 4:00 a day (PWA 6.J)
             items.append({"trip": "VAC", "start": start.isoformat(), "end": (start + timedelta(days=n - 1)).isoformat(), "lay": ""})
             continue
-        dt = details.get(m.group(1)) or {}
-        end = start + timedelta(days=int(dt.get("rel_days") or 0))
-        items.append({"trip": m.group(1), "start": start.isoformat(), "end": end.isoformat(), "lay": dt.get("lay", "")})
-        seat = seats[m.start():m.start() + 4].strip()
-        trips[f"{m.group(1)}|{start.isoformat()}"] = {k: v for k, v in {
+        seat = seats[pos:pos + 4].strip()
+        cst = carry_day(pos)
+        nxt = toks[j + 1].start() if j + 1 < len(toks) else len(ids) + 400
+        rk = next((x for x in rels if not x[2] and pos - 2 <= x[0] < nxt), None)  # its release, before the next
+        left = pos + len(tok) <= hdr[0] or (cin is not None and abs(pos - cin) < abs(pos - hdr[0]))
+        if left and not cst and (tok not in (prev_details or {}) or (
+                tok in (details or {}) and rk and rk[1] == _rel_days(details[tok]))):
+            left = False  # 1.8.2 (G4A-2): no marker, and not in the previous period's package or its release where this
+            # period's same-numbered pairing releases: this period's first-day trip squeezed left, no carry-in
+        if cst or left:
+            # 1.8.2 (T5): the carry-in: the previous period's trip, this period's share of its credit
+            dt = (prev_details or {}).get(tok) or {}
+            r = _rel_days(dt)
+            if cst is None:  # no marker: its release day less its length, else the day before the period
+                cst = first + timedelta(days=rk[1] - r) if rk and r else first - timedelta(days=1)
+            end = cst + timedelta(days=r) if dt else (first + timedelta(days=rk[1]) if rk else first)
+            end = max(end, first)
+            if rk and (first + timedelta(days=rk[1])) == end:
+                rk[2] = True
+            cr = re.search(r"(\d{3}):(\d{2})", crs[pos:pos + 10])
+            share = f"{int(cr.group(1))}:{cr.group(2)}" if cr else None
+            items.append({"trip": tok, "start": cst.isoformat(), "end": end.isoformat(), "lay": dt.get("lay", "")})
+            trips[f"{tok}|{cst.isoformat()}"] = {k: v for k, v in {
+                "blk": dt.get("block"), "credit": dt.get("credit"), "seat": seat, "report": dt.get("report"),
+                "duties": dt.get("duties"), "period_credit": share}.items() if v}
+            continue
+        dt = details.get(tok) or {}
+        r = _rel_days(dt)
+        # 1.8.2 (G4A-1): 1.8.1's nearest column, unless the trip is in the package, no release prints under its day +
+        # rel_days and its own (after it, before the next token and that token's day) prints under the span's day +
+        # rel_days: the next day's trip squeezed right of the header before (T5: 3 right of Dec 2, release Dec 5)
+        kd, sk = near(pos), span(pos)
+        lim = near(toks[j + 1].start()) if j + 1 < len(toks) else len(hdr) + 99
+        if dt and sk + r < lim and not rel_on(kd + r) and rel_on(sk + r, within=(pos - 2, nxt)):
+            kd = sk
+        rel_on(kd + r, take=True)
+        start = first + timedelta(days=kd)
+        end = start + timedelta(days=r)
+        items.append({"trip": tok, "start": start.isoformat(), "end": end.isoformat(), "lay": dt.get("lay", "")})
+        trips[f"{tok}|{start.isoformat()}"] = {k: v for k, v in {
             "blk": dt.get("block"), "credit": dt.get("credit"), "seat": seat, "report": dt.get("report"),
             "duties": dt.get("duties")}.items() if v}
     # the period's last day: the header's last column when it spans the period, else the month's last day

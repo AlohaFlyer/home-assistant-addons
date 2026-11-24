@@ -56,7 +56,7 @@ def _run(W, monkeypatch, months, hours=3):
     W.S["own_emp"] = "10001"
     W.FLAGS["hunt"] = True
     W.S["freq"] = {"hunt_s": 5, "normal_min": 1}  # the floor: the pace is his budget's
-    W.S["pot_urls"] = {"mobile": W.MOBILE_POT}
+    W.S["pot_urls"] = {"mobile": W.mobile_pot_url("003.152")}
     if months == 2:
         W.S["pot_urls"]["mobile_003.153"] = f"{W.BASE}/full/mobileopentimepot.cgi?BCID=003.153&From=MainMenu"
     slot = {"n": 0}
@@ -120,7 +120,7 @@ def test_the_shares_are_sized_from_his_folders_and_bounded_by_his_optional_loads
     W = mk("pilot2")
     W.FLAGS["hunt"] = True
     W.S["freq"] = {"hunt_s": 5, "normal_min": 1}
-    W.S["pot_urls"] = {"mobile": W.MOBILE_POT}
+    W.S["pot_urls"] = {"mobile": W.mobile_pot_url("003.152")}
     sh = W.opt_shares()
     assert sh == {"tradeboard_check": 2, "grid_check": 2, "requests_check": 2, "pot_details": 2}
     assert W.opt_hour() == W.PACE_OPT_H  # one bid month: 8 shared out of the 12 he always kept, 4 left in the pool
@@ -141,7 +141,7 @@ def test_a_read_past_its_share_uses_the_pool_and_the_total_never_passes_the_cap(
     W = mk("pilot2")
     W.FLAGS["hunt"] = True
     W.S["freq"] = {"hunt_s": 5, "normal_min": 1}
-    W.S["pot_urls"] = {"mobile": W.MOBILE_POT}
+    W.S["pot_urls"] = {"mobile": W.mobile_pot_url("003.152")}
     fl = real_fl(W, lambda u: "<html><body>Tradeboard All Requests</body></html>")
     W.RUN.update(check=True, optional=True, opt_name="own_trip_times")
     cap, pool = W.opt_cap(), W.opt_cap() - sum(W.opt_shares().values())
@@ -168,7 +168,7 @@ def test_a_read_past_its_share_uses_the_pool_and_the_total_never_passes_the_cap(
 def test_the_admin_has_no_shares_and_his_reads_are_never_left_out(mk):
     A = mk("")
     A.FLAGS["hunt"] = True
-    A.S["pot_urls"] = {"mobile": A.MOBILE_POT}
+    A.S["pot_urls"] = {"mobile": A.mobile_pot_url("003.152")}
     assert A.opt_shares() == {} and A.opt_cap() is None and A.budget_pace_s() == 0
     A.RUN.update(check=True, optional=True, opt_name="tradeboard_check")
     assert A.opt_fits(50)
