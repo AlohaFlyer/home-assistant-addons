@@ -9354,10 +9354,11 @@ def pick_entry(emp, name, pos, base, pick=""):
 
 # ---------------------------------------------------------------- 1.7.11 (FW-0076): the lookup's month
 def lookup_months():
-    """(this HST month, the next) as YYYY-MM: the only months pilot/set's month may name (the pilot card's buttons)."""
-    t = local_now()
-    nxt = (t.year + 1, 1) if t.month == 12 else (t.year, t.month + 1)
-    return f"{t.year}-{t.month:02d}", f"{nxt[0]}-{nxt[1]:02d}"
+    """(this HST month, the next) as YYYY-MM: the only months pilot/set's month may name (the pilot card's buttons).
+    1.8.2 (T8): this month is the bid month of today (this_month_key), so on Dec 1, the last day of November's period
+    (Nov 1 to Dec 1), a pilot's November line can still be looked up, and January, not published yet, is not."""
+    a = this_month_key()
+    return a, month_add(a, 1)
 
 
 def month_label(m):

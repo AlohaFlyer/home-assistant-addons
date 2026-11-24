@@ -65,10 +65,18 @@ const PILOT_WAIT_MS = 120000;  // 1.6.2: the loading line gives up this long aft
 const MONTH_RE = /^[0-9]{4}-(0[1-9]|1[0-2])$/;  // 1.7.11 (revision 6): pilot/set's month, roles.MONTH_PATTERN
 const PILOT_NOTE_MS = 600000;  // 1.7.11 review: a refused month tap's note stays this long (or until the next lookup)
 const PILOT_QUEUED_RE = /^(waiting:|Schedule Lookup reads are paused)/;  // 1.7.11 review: the Watcher's replies for a lookup it keeps for later
-// 1.7.11 (FW-0076): this HST month and the next as YYYY-MM (the Watcher takes only these two)
-const pcMonths = () => {
-  const t = new Date(Date.now() - 10 * 3600e3), y = t.getUTCFullYear(), m = t.getUTCMonth() + 1;
-  return [`${y}-${String(m).padStart(2, "0")}`, m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`];
+// 1.7.11 (FW-0076): this HST month and the next as YYYY-MM (the Watcher takes only these two). 1.8.2 (C9): the bid
+// month that holds today (HST) and the next, from the pilot's own schedule sensor (its periods, the Watcher's
+// bid_bounds): Dec 1 is in November's period (Nov 1 to Dec 1), so on Dec 1 the buttons are Nov and Dec and another
+// pilot's November line, still live that day, can be looked up. With no period on file, the HST calendar month and
+// the next, as before; a month the Watcher does not take comes back with its reason (month_refused_status). The bid
+// month is fwBidMonth (the shared schedule grid block), as the Watcher's lookup_months (this_month_key, the next)
+const pcMonths = (S) => {
+  const st = (S || {})["sensor.flight_watcher_schedule"];
+  const today = new Date(Date.now() - 10 * 3600e3).toISOString().slice(0, 10);
+  const bm = fwBidMonth(((st && st.attributes) || {}).periods, today);
+  const [y, m] = bm.split("-").map(Number);
+  return [bm, m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`];
 };
 const pcMonthLabel = (ym) => { const m = MONTH_RE.exec(String(ym || "")) ? Number(ym.slice(5, 7)) : 0; return m ? `${MONTHS[m - 1].slice(0, 3)} ${ym.slice(0, 4)}` : String(ym || ""); };
 const hstHM = (iso) => { const t = Date.parse(iso || ""); return isNaN(t) ? "" : new Date(t - 10 * 3600e3).toISOString().slice(11, 16); };
@@ -450,6 +458,22 @@ const FWG_CSS = `
       .fwgsc{margin-top:4px;font-size:12px}.fwgsn{margin-top:4px;font-size:11.5px;color:var(--secondary-text-color)}
       @media (prefers-reduced-motion: reduce){.fwss{transition:none}}
 `;
+// 1.8.2 (C4, C9, C10, P8, S11): the bid month (YYYY-MM) whose period holds the day iso (HST), from a schedule
+// sensor's periods ({YYYY-MM: {start, end, src}}, the Watcher's bid_bounds); a period from the pairings package or the
+// schedule pages wins over a calendar one. With none that holds iso, the calendar month's own period still tells: one
+// that starts after iso (Dec 1 against December's Dec 2 to 31) puts iso in the month before, one that ends before it
+// in the month after. Else the calendar month. Only the calendar month or a neighbour, as the Watcher's
+// this_month_key (bid_period_key). G5B-4: one copy, here, for the schedule card and the pilot card
+function fwBidMonth(periods, iso) {
+  const cal = String(iso).slice(0, 7), [y, m] = cal.split("-").map(Number);
+  const mon = (k) => new Date(Date.UTC(y, m - 1 + k, 1)).toISOString().slice(0, 7);
+  const P = periods && typeof periods === "object" ? periods : {};
+  const ok = (k) => !!P[k] && FWG_ISO.test(P[k].start || "") && FWG_ISO.test(P[k].end || "") && P[k].start <= P[k].end;
+  const hit = [mon(-1), cal, mon(1)].filter((k) => ok(k) && P[k].start <= iso && iso <= P[k].end);
+  if (hit.length) return hit.find((k) => P[k].src !== "calendar") || hit[0];
+  if (ok(cal) && P[cal].src !== "calendar") return P[cal].start > iso ? mon(-1) : P[cal].end < iso ? mon(1) : cal;
+  return cal;
+}
 // ---- end shared schedule grid ----
 // 1.7.7: FLICA's pairing page writes times as '0830' and block as '0530'; the grid writes '08:30' and '5:30'
 const pcHM = (s) => { const t = String(s == null ? "" : s).trim(); return /^\d{4}$/.test(t) ? `${t.slice(0, 2)}:${t.slice(2)}` : t; };
@@ -676,7 +700,9 @@ class FlightWatcherPilotCard extends HTMLElement {
     this._h = h;
     const st = h.states[this._config.entity];
     const sig = st ? st.last_updated : "";
-    const tsig = TAX_HELPERS.map((e) => (h.states[e] || {}).last_updated || "").join("|");  // FW-0062: Pay-Net follows the tax settings
+    // FW-0062: Pay-Net follows the tax settings; 1.8.2 (C9): the month buttons the bid months (new ones at 00:00 HST)
+    const tsig = TAX_HELPERS.map((e) => (h.states[e] || {}).last_updated || "").join("|")
+      + "|" + pcMonths(h.states).join(",");
     if (sig === this._sig && this._root) {
       if (tsig !== this._tsig) { this._tsig = tsig; if (!this._busy) this._paint(); }
       return;
@@ -736,7 +762,8 @@ class FlightWatcherPilotCard extends HTMLElement {
   _monthsHtml(shown, waiting) {
     const btn = (m) => { const on = m === shown; return `<button type="button" class="mo" data-month="${m}" aria-pressed="${on}"${on || waiting ? " disabled" : ""}>${this._esc(pcMonthLabel(m))}</button>`; };
     const note = this._mnoteText();
-    return `<div class="mos" role="group" aria-label="Month">${pcMonths().map(btn).join("")}</div>${note ? `<div class="mnote" role="status">${this._esc(note)}</div>` : ""}`;
+    const ms = pcMonths(this._h && this._h.states);  // 1.8.2 (C9): from the pilot's own schedule sensor
+    return `<div class="mos" role="group" aria-label="Month">${ms.map(btn).join("")}</div>${note ? `<div class="mnote" role="status">${this._esc(note)}</div>` : ""}`;
   }
   // 1.6.2: when a lookup asked at t is overdue: 2 minutes past the Watcher's next check (or past t)
   _dueAt(t) {
