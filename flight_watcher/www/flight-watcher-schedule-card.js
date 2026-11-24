@@ -1179,6 +1179,22 @@ const FWG_CSS = `
       .fwgsc{margin-top:4px;font-size:12px}.fwgsn{margin-top:4px;font-size:11.5px;color:var(--secondary-text-color)}
       @media (prefers-reduced-motion: reduce){.fwss{transition:none}}
 `;
+// 1.8.2 (C4, C9, C10, P8, S11): the bid month (YYYY-MM) whose period holds the day iso (HST), from a schedule
+// sensor's periods ({YYYY-MM: {start, end, src}}, the Watcher's bid_bounds); a period from the pairings package or the
+// schedule pages wins over a calendar one. With none that holds iso, the calendar month's own period still tells: one
+// that starts after iso (Dec 1 against December's Dec 2 to 31) puts iso in the month before, one that ends before it
+// in the month after. Else the calendar month. Only the calendar month or a neighbour, as the Watcher's
+// this_month_key (bid_period_key). G5B-4: one copy, here, for the schedule card and the pilot card
+function fwBidMonth(periods, iso) {
+  const cal = String(iso).slice(0, 7), [y, m] = cal.split("-").map(Number);
+  const mon = (k) => new Date(Date.UTC(y, m - 1 + k, 1)).toISOString().slice(0, 7);
+  const P = periods && typeof periods === "object" ? periods : {};
+  const ok = (k) => !!P[k] && FWG_ISO.test(P[k].start || "") && FWG_ISO.test(P[k].end || "") && P[k].start <= P[k].end;
+  const hit = [mon(-1), cal, mon(1)].filter((k) => ok(k) && P[k].start <= iso && iso <= P[k].end);
+  if (hit.length) return hit.find((k) => P[k].src !== "calendar") || hit[0];
+  if (ok(cal) && P[cal].src !== "calendar") return P[cal].start > iso ? mon(-1) : P[cal].end < iso ? mon(1) : cal;
+  return cal;
+}
 // ---- end shared schedule grid ----
 
 // ---- shared data age: keep identical in every card that holds it (tests/test_fw1712_data_age.py) ----
@@ -1384,11 +1400,13 @@ class FlightWatcherScheduleCard extends HTMLElement {
       "input_number.flight_watcher_federal_tax_pct", "input_number.flight_watcher_state_tax_pct", "input_number.flight_watcher_longevity_year", "input_text.flight_watcher_er_trips", "sensor.flight_watcher_schedule_versions"]
       .map((e) => h.states[e] && `${h.states[e].last_updated}/${h.states[e].state}`).join("|") + "|" + this._doh(h) + (this._isAdmin(h) ? "|admin" : "|pilot") + "|" + this._role(h) + (this._isAdmin(h) ? "|" + ((h.states["sensor.flight_watcher_crewtrac_check"] || {}).last_updated || "") : "");  // 1.7.22: admin only
     // 1.6.2 (Release A item 15): each state too, not only last_updated: the pilot portal keeps the month helper
-    // (input_number.flight_watcher_month_offset) in the page, and a step there need not move last_updated
+    // (input_number.flight_watcher_month_offset) in the page, and a step there need not move last_updated.
+    // 1.8.2 (C4): and the bid month of today, so a page left open moves on at the bid period's first day (00:00 HST)
+    const sigM = sig + "|" + this._bidToday(h);
     this._h = h;
     if (!this._ageT && this.isConnected) this._ageT = setInterval(() => this._ageTick(), 1000);  // 1.7.12: it ticks
-    if (sig === this._sig) { this._ageTick(); return; }
-    this._sig = sig;
+    if (sigM === this._sig) { this._ageTick(); return; }
+    this._sig = sigM;
     this._render();
   }
   // 1.7.12: the data age stamp (the clock card's), from this card's own entities (the shared block's fwAgeFrom)
@@ -1538,10 +1556,33 @@ class FlightWatcherScheduleCard extends HTMLElement {
     const f = fwListFile(this._vf || (this._vf = {}), "/local/flight-watcher/versions_", st, () => { this._sig = null; this.hass = this._h; });
     return (f && f.months) || ((st || {}).attributes || {}).months || {};
   }
+  // 1.8.2 (C4, C10, P8, S11): the month the offset counts from is the bid month that holds today in HST (fwBidMonth on
+  // the sensor's periods), never the device's own clock and time zone: a phone on Japan time turned the month up to
+  // 19 h early, and on Dec 1 (November's period runs Nov 1 to Dec 1) the card opened December, where a trip carried
+  // across from November has no code day and no in-flight mark. Now November through Dec 1 (Now and the reset on the
+  // 1st, offset 0, included) and December from Dec 2; the arrows step the offset from there as before
+  _bidToday(h) {
+    const st = (h || this._h).states["sensor.flight_watcher_schedule"];
+    return fwBidMonth(((st && st.attributes) || {}).periods, new Date(Date.now() - 10 * H).toISOString().slice(0, 10));
+  }
+  // 1.8.2 (G5A-1, G5B-2): the month offset as it counts now. The reset automation sets it to 0 at 00:01 on the
+  // calendar 1st, but the month it counts from moves on at the bid period's first day (Dec 2): an offset set against
+  // an earlier bid month (its last_changed, in HST, on the same periods) counts as 0, so a step made on Dec 1 to see
+  // December does not open January from Dec 2 to Jan 1 (nor February from Dec 31 when January starts then). With no
+  // last_changed (or one in a later bid month than today's: a clock off), as set
+  _offset(h) {
+    const S = (h || this._h).states, o = S["input_number.flight_watcher_month_offset"] || {};
+    const off = parseInt(o.state || "0", 10) || 0, t = Date.parse(o.last_changed || "");
+    if (!off || isNaN(t)) return off;
+    const st = S["sensor.flight_watcher_schedule"];
+    const was = fwBidMonth(((st && st.attributes) || {}).periods, new Date(t - 10 * H).toISOString().slice(0, 10));
+    return was < this._bidToday(h) ? 0 : off;
+  }
   _key() {
-    const off =parseInt((this._h.states["input_number.flight_watcher_month_offset"] || {}).state || "0", 10) || 0;
-    const d = new Date(); const m = d.getMonth() + off; const y = d.getFullYear() + Math.floor(m / 12);
-    return { y, m: ((m % 12) + 12) % 12, key: `${y}-${String(((m % 12) + 12) % 12 + 1).padStart(2, "0")}` };
+    const off = this._offset();
+    const [y0, m0] = this._bidToday().split("-").map(Number);
+    const m = m0 - 1 + off, y = y0 + Math.floor(m / 12), mm = ((m % 12) + 12) % 12;
+    return { y, m: mm, key: `${y}-${String(mm + 1).padStart(2, "0")}` };
   }
   _iso(s, y) { // '26Nov' -> '2026-11-26'
     const mm = MON3.indexOf((s || "").slice(2, 5).toUpperCase()); if (mm < 0) return "";
@@ -1700,8 +1741,14 @@ class FlightWatcherScheduleCard extends HTMLElement {
         const nv = e.target.closest(".nav");
         if (nv) {
           const d = parseInt(nv.dataset.nav, 10), ent = { entity_id: "input_number.flight_watcher_month_offset" };
-          if (d === 0) this._h.callService("input_number", "set_value", { ...ent, value: 0 });
-          else this._h.callService("input_number", d > 0 ? "increment" : "decrement", ent);
+          // 1.8.2 (G5A-1): an offset left from an earlier bid month counts as 0 (_offset): it is set to 0 first, so
+          // the arrow steps from the month shown (and the helper's last_changed moves on with it)
+          const h = this._h, raw = parseInt((h.states[ent.entity_id] || {}).state || "0", 10) || 0;
+          const step = () => h.callService("input_number", d > 0 ? "increment" : "decrement", ent);
+          if (d === 0) h.callService("input_number", "set_value", { ...ent, value: 0 });
+          else if (raw !== this._offset()) {
+            Promise.resolve(h.callService("input_number", "set_value", { ...ent, value: 0 })).then(step);
+          } else step();
           return;
         }
         const py = e.target.closest(".pay");
@@ -2354,7 +2401,9 @@ class FlightWatcherScheduleCard extends HTMLElement {
       }
       const rows = (mon.days || []).map(([d, trip, lay]) => {
         const dt = new Date(d + "T12:00:00"); const wk = dt.getDay() === 0 || dt.getDay() === 6;
-        const other = dt.getMonth() !== m;
+        // 1.8.2 (C7): faded = outside the bid period the totals cover (bp: Dec 1 plain on November's page, faded on
+        // December's), the calendar month only when no bid period is known (bp is the calendar month then)
+        const other = !inBp(d);
         const sc = this._school(d); const noSchool = !!(sc && sc.days.has(d));
         const pp = trip === PAYP ? (ppDay[d] || null) : null;  // 1.7.2: a PAYP day (pay protected, PWA Definitions 57)
         const t = trip === "VAC" ? `<span class="vac">VAC</span>` : trip === PAYP ? `<span class="payp tag" title="${this._esc(ppTitle(pp))}">PAYP</span>` : (trip ? `<span class="trip${trade.has(trip + "|" + d) ? " tr" : ""}" data-k="${this._esc(trip + "|" + d)}" role="button" tabindex="0" aria-expanded="${pdK === trip + "|" + d ? "true" : "false"}" title="${this._esc(((ownT[`${trip}|${d}`] || {}).crew || []).join("\n") || "crew not read yet")}">${this._esc(trip)}</span>${d <= today ? "" : `<span class="trb${trade.has(trip + "|" + d) ? " on" : ""}" data-k="${this._esc(trip + "|" + d)}" title="${trade.has(trip + "|" + d) ? "Marked: would trade this trip for a better one. Tap to unmark." : "Tap to mark this trip as one you would trade for a better one."}">&#8644;</span>`}${d <= today || !admin ? "" : `<span class="drb${dropM.has(trip + "|" + d) ? (dropR[trip + "|" + d] ? " on rdy" : " on") : ""}" data-k="${this._esc(trip + "|" + d)}" title="${dropR[trip + "|" + d] ? "Grid green on every day: drop request drafted (draft only, never sent: drop it yourself in FLICA). Tap to unmark." : dropM.has(trip + "|" + d) ? "Marked: would DROP this trip once the reserve grid is green on every day of it. Tap to unmark." : "Tap to mark this trip as one you would DROP when the grid allows it."}">&#8615;</span>`}` : "");

@@ -59,7 +59,9 @@ class FlightWatcherRecallCard extends HTMLElement {
     if (typeof this.toggleAttribute === "function") this.toggleAttribute("dark", !!(h && h.themes && typeof h.themes.darkMode === "boolean" ? h.themes.darkMode : typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: dark)").matches));
     this._h = h;
     const st = h.states[this._c.entity];
-    const sig = st ? st.last_updated + JSON.stringify(st.attributes.me || {}) : "none";
+    // 1.8.2 (C5): the HST day is in the signature, so the first hass push after midnight HST redraws (the month moves
+    // on with the clock, _render) even when the sensor itself has not changed overnight
+    const sig = (st ? st.last_updated + JSON.stringify(st.attributes.me || {}) : "none") + "|" + this._today();
     if (sig === this._sig) return;
     const ae = this.shadowRoot && this.shadowRoot.activeElement;  // never redraw under someone typing
     if (ae && (ae.tagName === "TEXTAREA" || (ae.tagName === "INPUT" && (ae.dataset.ccr !== undefined || ae.dataset.me !== undefined)) || ae.tagName === "SELECT")) return;
@@ -67,6 +69,7 @@ class FlightWatcherRecallCard extends HTMLElement {
     this._render(st);
   }
   getCardSize() { return this._c.mode === "alert" ? 1 : 8; }
+  _today() { return new Date(Date.now() - 10 * 3600e3).toISOString().slice(0, 10); }  // HST, as every card
   // FW-0060: the sensor's days (newest, fresher) plus the older days only the file has, newest first
   _days(st) {
     const a = (st && st.attributes) || {};
@@ -180,7 +183,13 @@ class FlightWatcherRecallCard extends HTMLElement {
     if (this._busy && chk !== this._busy.was) { this._busy = null; this._note = ""; clearTimeout(this._busyT); }
     if (this._late !== undefined && chk !== this._late) { this._late = undefined; this._note = ""; }  // 1.7.1 (F#77): a late answer
     const me = a.me || {};
-    if (!this._m) { const n = new Date(Date.now() - 10 * 3600e3); this._m = n.toISOString().slice(0, 7); }
+    // 1.8.2 (C5): the month whose page holds today (HST; the card files each list day under its calendar month, as
+    // recall.py keys Over 75). It was set once at the first draw, so a page left open on Nov 30 never showed Dec 1's
+    // list. Now it moves on with the clock unless a month was picked (the arrows, a day link, or set before the first
+    // draw: this._m is then not the month the card took itself); back on this month it follows the clock again
+    const cur = this._today().slice(0, 7);
+    if (!this._m || this._m === this._mAuto) this._m = cur;
+    this._mAuto = cur;
     const [my, mm] = this._m.split("-").map(Number);
     if (!this._show) { this._show = { FO: true, CA: false }; try { const v = JSON.parse(localStorage.getItem("flight_watcher_recall_show") || "null"); if (v) this._show = v; } catch (e) {} }
     const show = this._show;
