@@ -3390,6 +3390,25 @@ def _sched_items():
     return [it for m in S.get("schedule", {}).values() for it in m.get("items", [])]
 
 
+def _line_months():
+    """1.8.2 (council loop 3, R5): S schedule's months for the FAR column and the Working Flight, a trip two months
+    list (a carry-in, the same pairing and start) given its latest end on file in each copy. Both take a trip's first
+    copy (recall.line_records, working._pairings), November's, and November's page can end before the trip comes home
+    (H3908 Nov 29 to Dec 3 reads Nov 29 to Nov 29 on a page that runs to Dec 2); December's page shows all of it."""
+    months, ends, out = S.get("schedule") or {}, {}, {}
+    for m in months.values():  # a month that is no dict raises, as _sched_items does (the callers' own guards)
+        for it in m.get("items") or []:
+            k = (it.get("trip"), it.get("start"))
+            if str(it.get("end") or "") > ends.get(k, ""):
+                ends[k] = str(it.get("end"))
+    for mk, m in months.items():
+        its = [dict(it, end=ends[(it.get("trip"), it.get("start"))])
+               if ends.get((it.get("trip"), it.get("start")), "") > str(it.get("end") or "") else it
+               for it in m.get("items") or []]
+        out[mk] = {**m, "items": its}
+    return out
+
+
 def touches_vac(ev):
     """True when the trip's dates overlap any VAC block on Ryan's schedule (0.3.8)."""
     s, e = _span(ev)
@@ -3438,7 +3457,8 @@ def far_trips(ev, exclude=None):
     if not FAR.window(s, e, rep, arr):
         return None, "pickup report or final arrival not read yet"
     new = RC.pickup_trip(ev.get("pairing") or "pickup", s, e, rep, arr, hours(ev.get("blk")), _pickup_duties(ev, s))
-    mine = RC.line_records(S.get("schedule") or {}, S.get("own_trips") or {}, s, e, local_now().date(), exclude)
+    # 1.8.2 (council loop 3, R5): a carry-in trip to its latest end on file (_line_months), whichever page cut it
+    mine = RC.line_records(_line_months(), S.get("own_trips") or {}, s, e, local_now().date(), exclude)
     return (new, mine), ""
 
 
@@ -6571,8 +6591,10 @@ def publish_working_flight(now=None, force=False):
     pilot's domestic stations; why a timeout could not be worked out after an error is logged once a change."""
     try:
         now = now or datetime.now(HST)
-        wf = WK.working_flight(_sched_items(), S.get("own_trips") or {}, now, WORKING_ROLL_H, pkg=_working_pkg(),
-                               months=S.get("schedule") or {}, domestic=_domestic())
+        line = _line_months()  # 1.8.2 (council loop 3, R5): a carry-in trip to its latest end on file
+        wf = WK.working_flight([it for m in line.values() for it in m.get("items") or []],
+                               S.get("own_trips") or {}, now, WORKING_ROLL_H, pkg=_working_pkg(), months=line,
+                               domestic=_domestic())
         err = WK.TIMEOUT_ERR.get("msg") or ""
         if err != WORKING_LAST.get("err", ""):
             WORKING_LAST["err"] = err
@@ -6723,10 +6745,12 @@ def schedule_due(force, now=None):
     return bool(force) or now - S.get("sched_checked_at", 0) >= SCHED_GAP_S
 
 
-def schedule_failed(seen, why=(), paths=()):
+def schedule_failed(seen, why=(), paths=(), month=None):
     """1.6.1: one log line for a read where no page was accepted, and the next read's due time. 1.6.2: the due time
     waits for a breaker that stopped every page this read may load (30 min doubling to 6 h after 3 failed reads in a
-    row), the status goes on sensor.<prefix>_schedule (read_status) and the log line says when the next read is."""
+    row), the status goes on sensor.<prefix>_schedule (read_status) and the log line says when the next read is.
+    month: the read's current month (1.8.2, council loop 3, R2: a read that ran across Dec 2 00:00 answers the
+    refresh press of the month it read, November, not the month the clock is in when it ends)."""
     n = int(S.get("sched_fail") or 0) + 1
     gap = SCHED_FAIL_GAPS_S[n - 1] if n <= len(SCHED_FAIL_GAPS_S) else SCHED_GAP_S
     nxt = time.time() + gap
@@ -6736,7 +6760,7 @@ def schedule_failed(seen, why=(), paths=()):
     log.info("schedule read failed (%d in a row, %d tries: %s); next read in %d min", n, len(seen),
              "; ".join(seen) or "none", round((nxt - time.time()) / 60))
     sched_status("; ".join(why) or "no page accepted", len(seen))
-    refresh_note(sched_month(), "failed", "; ".join(why) or "no schedule page accepted")  # 1.8.2 (LIVE-10)
+    refresh_note(month or sched_month(), "failed", "; ".join(why) or "no schedule page accepted")  # 1.8.2 (LIVE-10)
     save_state(S)
     publish_schedule()
 
@@ -7031,10 +7055,12 @@ def other_month_fresh_s(mon, cur_month):
 
 
 def other_month_age(mon, store=None, now=None):
-    """Seconds since the month was last read on Schedule Lookup (read_ts: the read's start); inf when never."""
+    """Seconds since the month was last read on Schedule Lookup (read_ts: the read's start); inf when never. 1.8.2
+    (council loop 3, R2): or as the current month on the mobile page (accept() stamps that copy's read_ts), so the month
+    that was current until 00:00 is not loaded again at once as a past one."""
     rec = ((S.get("schedule") or {}) if store is None else store).get(mon) or {}
     try:
-        ts = float(rec.get("read_ts") or 0) if rec.get("src") == "lookup" else 0
+        ts = float(rec.get("read_ts") or 0)
     except (TypeError, ValueError):
         ts = 0
     return ((time.time() if now is None else now) - ts) if ts else float("inf")
@@ -7905,6 +7931,8 @@ def _schedule_read(fl, force):
         old = store.get(s["month"])
         read_at = now_iso()
         s["read_at"] = read_at  # 1.8.2 (S4): the card's refresh button waits for this (or 'updated') to move
+        if s.get("src") != "lookup":  # 1.8.2 (council loop 3, R2): the mobile page's read counts as the month's read
+            s["read_ts"] = read_stamp()  # too, so once its bid period is over (Dec 2) November is fresh 24 h from it
         if s.get("updated"):  # 1.8.1: FLICA's stamp for the whole schedule, so a later month it moved is read again
             S["sched_stamp"] = s["updated"]
         stamp_marks(cur_month)  # 1.8.2 (merge of 1.8.1): such a month is marked before the spare load is given out
@@ -8034,7 +8062,7 @@ def _schedule_read(fl, force):
         save_state(S)
         publish_schedule()
         return
-    schedule_failed(seen, why, paths)
+    schedule_failed(seen, why, paths, cur_month)  # 1.8.2 (council loop 3, R2): the month this read started with
 
 
 def detail_probe(fl, pot):
