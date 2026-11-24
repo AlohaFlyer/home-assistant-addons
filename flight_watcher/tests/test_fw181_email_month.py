@@ -1,4 +1,4 @@
-"""1.8.1 (POT-2, LIVE-1, POT-8, P9, LIVE-11, POT-6): alert-email finds and hidden-trip pushes follow the trip's own bid
+"""1.8.2 (POT-2, LIVE-1, POT-8, P9, LIVE-11, POT-6): alert-email finds and hidden-trip pushes follow the trip's own bid
 month. Live on 1.8.0 (Nov 23, 2026) three December trips named in FLICA alert emails got a false CRITICAL hidden push:
 each was missing from the one pot read (November's), so it counted as gone, and its seat was still Open on its pairing
 page because it sat in December's pot. A find is judged gone, queued for its pickup check, scored or pushed as hidden

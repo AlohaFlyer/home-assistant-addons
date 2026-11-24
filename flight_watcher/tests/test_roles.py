@@ -30,7 +30,7 @@ ADMIN_SUBS_1412 = [
     # 1.7.2 (Ryan, Nov 12): the van alerts' switch and sliders
     "flight_watcher/van/alerts/set", "flight_watcher/van/first_min/set", "flight_watcher/van/second_min/set",
     "flight_watcher/van/adjust/set",  # 1.7.11 (FW-0075): Ryan moves the van in 5 minute steps (layover card)
-    "flight_watcher/pot_month/set",  # 1.8.1: the Pot month select, every instance's (never a portal command)
+    "flight_watcher/pot_month/set",  # 1.8.2: the Pot month select, every instance's (never a portal command)
     "flight_watcher/schedule/refresh",  # 1.8.2: the schedule card's refresh button, every instance's (never a portal's)
 ]
 PILOT_LOSES = ("email/alert", "auto_swap/set", "swap_map/press", "drop/set", "crew_scan/press", "layover/note",

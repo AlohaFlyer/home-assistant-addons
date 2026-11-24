@@ -134,7 +134,7 @@ def test_a_stored_40_s_hunt_survives_a_start(mk, monkeypatch, caplog):
 # ------------------------------------------------------------------ the budget holds a 5 s hunt
 def _pilot_pages(W):
     pot_html = open(os.path.join(FX, "mobile_pot_rows.html")).read()
-    # 1.8.1: December's pot (BCID 003.153) carries December's trips (made-up H37xx), or the Watcher refuses it as a
+    # 1.8.2: December's pot (BCID 003.153) carries December's trips (made-up H37xx), or the Watcher refuses it as a
     # page of another month's trips and reads one pot page a check
     dec_html = re.sub(r"<td>H36(\d\d)</td><td>(\d\d)Nov</td><td>(\d\d)Nov</td>",
                       r"<td>H37\1</td><td>\2Dec</td><td>\3Dec</td>", pot_html)
@@ -164,7 +164,7 @@ def test_the_budget_holds_a_5_s_hunt_to_100_loads_an_hour_spread_over_the_hour(m
     W.S["freq"] = {"hunt_s": 5, "normal_min": 6}
     W.S["switches"] = {"hunt": True, "pause": False}
     W.FLAGS["hunt"] = True
-    W.S["pot_month"] = "Both"  # 1.8.1: both bid months' pot pages every check (Ryan, Nov 23: "set it to Both")
+    W.S["pot_month"] = "Both"  # 1.8.2: both bid months' pot pages every check (Ryan, Nov 23: "set it to Both")
     W.S["pot_urls"] = {"mobile": W.mobile_pot_url("003.152"),
                        "mobile_003.153": f"{W.BASE}/full/mobileopentimepot.cgi?BCID=003.153&From=MainMenu"}
     fl = real_fl(W, _pilot_pages(W))
@@ -296,7 +296,7 @@ def test_a_5_s_hunt_with_the_close_in_folder_paces_under_120_s_and_holds_the_bud
     W.S["freq"] = {"hunt_s": 5, "normal_min": 6}
     W.S["switches"] = {"hunt": True, "pause": False}
     W.FLAGS["hunt"] = True
-    W.S["pot_month"] = "Both"  # 1.8.1: both bid months' pot pages every check (Ryan, Nov 23: "set it to Both")
+    W.S["pot_month"] = "Both"  # 1.8.2: both bid months' pot pages every check (Ryan, Nov 23: "set it to Both")
     W.S["pot_urls"] = {"mobile": W.mobile_pot_url("003.152"),
                        "mobile_003.153": f"{W.BASE}/full/mobileopentimepot.cgi?BCID=003.153&From=MainMenu"}
     W.S["close_in"] = {"bcid": CLOSE_IN, "verified": True, "menu_at": W.CLOCK.t}

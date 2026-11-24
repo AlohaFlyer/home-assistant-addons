@@ -177,12 +177,11 @@ schedule if I don't think that it's right, but also maybe it should just always 
   "Not refreshed: <why>" (the Watcher's refusal, its read status, or no new read in 3 min). `sensor.<prefix>_schedule`
   carries each month's `read_at`, `listed` (the months FLICA's Schedule Lookup lists) and `refresh` (the last press:
   month, state queued, read, failed or refused, why).
-- Admin only: `schedule/refresh` is a core sub (`roles.SUBS`) in `roles.NOT_ON_PORTAL`, as 1.8.1's `pot_month/set`:
-  the portal's copy of the card (`FW_PORTAL`) has no button, its header is as in 1.8.1, and the spool refuses the
-  topic as anything else. No
-  contract change: `PORTAL_CMDS`, `PORTAL_REFUSED`, `FEATURES`, the budgets and the contract fixture are as they were. A
-  second pilot's own Watcher answers on its own prefix only (his Home Assistant copy publishes
-  `flight_watcher_<name>/schedule/refresh`).
+- Admin only: `schedule/refresh` is a core sub (`roles.SUBS`) in `roles.NOT_ON_PORTAL`, as the Pot month select's
+  `pot_month/set` (A): the portal's copy of the card (`FW_PORTAL`) has no button, its header is as in 1.8.1, and the
+  spool refuses the topic as anything else. No contract change: `PORTAL_CMDS`, `PORTAL_REFUSED`, `FEATURES`, the
+  budgets and the contract fixture are as they were. A second pilot's own Watcher answers on its own prefix only (his
+  Home Assistant copy publishes `flight_watcher_<name>/schedule/refresh`).
 - **The schedule follows the bid month** (audit LIVE-10, council loop 2): the current month is the bid month of today,
   not the HST calendar month. On Dec 1 November is still current (read every 30 min, Schedule Lookup bd=1126 or the
   mobile page of bid period 152; the refresh button, the sensor's `updated`, a failed read's note, Check now and the
@@ -233,6 +232,17 @@ schedule if I don't think that it's right, but also maybe it should just always 
   state note says so ("smart.json has no month type for December 2026") and the log says once a day that its finds and
   pushes carry no month rule. Nothing is guessed and the file is never written. (Ryan added December as "line" on Nov
   23.)
+- **The bid month edge, council loop 3** (Nov 24): five risks replayed across Dec 1 to Dec 2 00:00 HST
+  (`tests/test_fw182_council3.py`). The Pot month select on Dec 1 (Next month reads December's 003.153, never
+  January's) and from 00:00; a read that runs across 00:00 keeps the month it started with (a page of that month
+  loaded after 00:00 is accepted, and a refresh press whose read fails after 00:00 is answered for that month: it
+  stayed "queued" before); November's daily re-read is quiet when nothing changed and pushes once when it did; FLICA's
+  stamp moving with nothing changed reads December early and sends nothing; a carry-in trip counts once. Two fixes: the
+  refresh press above, and the FAR column and the Working Flight take a carry-in trip to its latest end on file
+  (`_line_months`: H3908 Nov 29 to Dec 3 read as Nov 29 only on November's page, so a Dec 3 pickup showed no Conflict
+  and Dec 1's Working Flight named the next trip). On Ryan's mobile path November still gets one Schedule Lookup read
+  at the spare load soon after 00:00: it is the baseline its next read's moves are compared with (moves are recorded
+  only between two reads of the same page), so a change on its page alone in the first day after Dec 2 is pushed.
 - FLICA load budget: at most 2 loads a read (`SCHED_TRIES_PER_READ`), unchanged; GET only, no new page type, paced 1.5
   to 3.5 s through the gate. A current month read on Schedule Lookup: the next month on every 30 min read, about 2 more
   loads an hour per pilot (4 instead of 2), and the closed month once a day. On the mobile path with no totals on the

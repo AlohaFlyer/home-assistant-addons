@@ -175,7 +175,7 @@ def _bcids(text):
 
 
 def link_bcids(text):
-    """1.8.1: the BCIDs a link's href or onclick names (BCID=003.153, or a quoted '003.153'), in order."""
+    """1.8.2: the BCIDs a link's href or onclick names (BCID=003.153, or a quoted '003.153'), in order."""
     return _bcids(text)
 
 
@@ -336,7 +336,7 @@ def bcid_after(b, mine):
 
 
 def pot_month_check(html, month, slack_days=3):
-    """1.8.1 (D1): is this page the open time pot of the bid month `month` ('YYYY-MM')? classify() is the caller's.
+    """1.8.2 (D1): is this page the open time pot of the bid month `month` ('YYYY-MM')? classify() is the caller's.
     {verdict, why, rows, dated, inside, other}: verdict 'not open' when it is no open time page; 'refused' when most
     of its dated rows start outside the month (slack_days either side for a bid period's edges: November's runs
     Nov 1 to Dec 1), other then names the month most of them start in; 'ok' when its rows start in the month;

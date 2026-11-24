@@ -379,7 +379,7 @@ def test_an_automatic_idea_never_pushes_never_drafts_and_never_feeds_auto_swap(W
 
 
 def test_a_month_not_read_keeps_its_pushed_ideas_and_a_first_read_pushes_none(W):
-    """1.8.1 review (alerts-swap-idea-repush): swap_scan(rows, read, quiet). A month whose read this check was its first
+    """1.8.2 review (alerts-swap-idea-repush): swap_scan(rows, read, quiet). A month whose read this check was its first
     (quiet, D3) notes its ideas without a push; a month not read this check (a refused page, a month the select left)
     keeps its ideas in swap_seen until its trip starts, so nothing is pushed again when it is read again."""
     W.S["trade_away"] = [K1]
@@ -401,7 +401,7 @@ def test_a_month_not_read_keeps_its_pushed_ideas_and_a_first_read_pushes_none(W)
 
 
 def test_swap_scan_takes_no_flica_client_and_loads_nothing(W):
-    # 1.8.1: the pot months read this check and those read for the first time (no FLICA client either)
+    # 1.8.2: the pot months read this check and those read for the first time (no FLICA client either)
     assert list(inspect.signature(W.swap_scan).parameters) == ["pot_rows", "read", "quiet"]
     W.swap_scan([P1, P2, P3, P4])  # count_fetch would raise
     assert not [t for t, _p, _r in W.FAKE.msgs if "fetch" in t]

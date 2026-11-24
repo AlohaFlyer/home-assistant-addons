@@ -401,7 +401,7 @@ def test_three_hours_of_pilot_hunting_never_wait_inside_a_check(mk):
 
 # ------------------------------------------------------------------ 6: a CAPTCHA on the main menu is a stop
 def test_a_captcha_pot_and_stop_with_no_login(mk):
-    """1.8.1: the pot pages are planned from their BCIDs (no main menu walk first): a CAPTCHA on the planned pot page
+    """1.8.2: the pot pages are planned from their BCIDs (no main menu walk first): a CAPTCHA on the planned pot page
     is a stop, read once, never a new login."""
     W = mk("pilot2")
     opened = []
@@ -426,7 +426,7 @@ def test_a_captcha_pot_page_is_a_stop_not_a_retry(mk):
 
 
 def test_the_admins_menu_captcha_ends_the_look_and_the_pot_still_reads(mk):
-    """1.8.1 (D1b): the main menu look for a month's BCID stops at a reCAPTCHA forward (never answered, no other page
+    """1.8.2 (D1b): the main menu look for a month's BCID stops at a reCAPTCHA forward (never answered, no other page
     loaded to get round it, nothing stopped): {} and the pot pages planned from their BCIDs read as before."""
     W = mk("")
     pot_html = open(os.path.join(FX, "mobile_pot_rows.html")).read()

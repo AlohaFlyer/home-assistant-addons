@@ -1847,7 +1847,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
     const rs = (st && st.attributes && st.attributes.read_status) || {};
     const rsLine = rs.ok === false ? `FLICA schedule not read: ${rs.why || "no page accepted"}${rs.at_hst ? ` at ${rs.at_hst} HST` : ""}${rs.next_hst ? `; next try ${rs.next_hst} HST` : ""}` : "";
     const pot = ((S["sensor.flight_watcher_pot_count"] || {}).attributes || {}).pairings || [];
-    // 1.8.1 (C3-R1): the sensor's count is the whole pot (every bid month read); with two pots it carries a fair
+    // 1.8.2 (C3-R1): the sensor's count is the whole pot (every bid month read); with two pots it carries a fair
     // share of each month's rows, so the Open column and the Ideas' O marks can miss an open trip: say how many
     const potN = Number(((S["sensor.flight_watcher_pot_count"] || {}).attributes || {}).count);
     const potOff = Number.isFinite(potN) && potN > pot.length ? Math.round(potN) - pot.length : 0;
@@ -2656,7 +2656,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
       const bpTxt = `${mdy(bp.from)} to ${mdy(bp.to)}${bp.src === "package" ? " (the pairings package)" : bp.src === "schedule" ? " (the schedule pages: no pairings package on file)" : " (the calendar month: no pairings package or schedule page gives the bid period)"}`;
       const totT = `${MONTHS[m]} totals: flown in the bid period, ${bpTxt}: each segment credited to the bid period it originates in (PWA 4.A), a trip across the bid period's edge its part here, plus vacation days at ${hm(VAC_H)} (PWA 6.J) and pay protected (PAYP) credit (PWA Definitions 57). Pay at ${rateTxt}/credit h incl. the PWA 4.O.1 crew override, LODO (4.D.2.e) and recall (4.M.1.a) pay where due; net after the tax settings. Checked against FLICA's Block and Credit.${carryT.length ? ` Also counted: ${carryT.join("; ")}.` : ""}`;
       body = `<div class="wrap"><table class="cal">${head}${rows}</table></div>${pdM && !narrow ? fwgPanelHtml(pdM) : ""}<div class="tot" title="${this._esc(totT)}">${tot}</div>${carryT.length ? `<div class="cin">Also counted (PWA 4.A): ${this._esc(carryT.join("; "))}.</div>` : ""}${bp.src === "calendar" ? `<div class="cin">Totals over the calendar month: no pairings package or schedule page on file gives this bid period.</div>` : ""}`;
-      body += potCut;  // 1.8.1 (C3-R1)
+      body += potCut;  // 1.8.2 (C3-R1)
     }
     const upd = awd0 ? "" : st && st.attributes ? (st.attributes.updated || "") : "";
     // 1.6.2: the award label and the read status sit above the grid (or the 'No schedule' line)

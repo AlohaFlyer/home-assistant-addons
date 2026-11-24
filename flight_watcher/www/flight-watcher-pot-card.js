@@ -187,7 +187,7 @@ class FlightWatcherPotCard extends HTMLElement {
         + (facts ? `<div class="l2">${facts}</div>` : "")
         + `<div class="l3"><span class="c ${fc}">${this._e(ft)}</span><span class="c ${ac}">${this._e(at)}</span>${this._cm(p)}${p.vac ? `<span class="c mute">VAC</span>` : ""}${p.blocked ? `<span class="c mute">blocked day</span>` : ""}</div></div>`;
     };
-    // 1.8.1 (C3): the sensor's count (the whole pot, every bid month read), not the rows it carries: with two pots it
+    // 1.8.2 (C3): the sensor's count (the whole pot, every bid month read), not the rows it carries: with two pots it
     // carries a fair share of each month, and the rest are "not shown" here (still read and watched by the Watcher)
     const pa = this._a("sensor.flight_watcher_pot_count"), cnt = Number(pa.count);
     const nP = Number.isFinite(cnt) && cnt > pot.length ? Math.round(cnt) : pot.length, nT = tb.length;

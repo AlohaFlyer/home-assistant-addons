@@ -130,7 +130,7 @@ SUBS = {
     # 1.7.9 (revision 4): portal only (PORTAL_SUBS), a shared pilot's note and field edit; his Watcher only checks them
     # and hands them to the admin's inbox (the admin never subscribes: it reads the inbox folder)
     "pilotdb/note": "pilotdb", "pilotdb/edit": "pilotdb",
-    # 1.8.1 (Ryan, Nov 23): the Pot month select (This month, Next month, Both) of every instance; never a portal's
+    # 1.8.2 (Ryan, Nov 23): the Pot month select (This month, Next month, Both) of every instance; never a portal's
     # (NOT_ON_PORTAL: the spool refuses anything not in PORTAL_CMDS, which stays as it is)
     "pot_month/set": "core",
     # 1.8.2 (Ryan, Nov 23): the schedule card's refresh button (one month read from FLICA now), every instance's own,
@@ -333,7 +333,7 @@ PORTAL_REFUSED = ("email/alert", "crew_scan/press", "upload/chunk", "drop/set", 
 # revision 3, Ryan Nov 12): the admin's van alert settings (the spool refuses anything not in PORTAL_CMDS). 1.7.11
 # (FW-0075): the admin's van move, never a portal's (no contract change)
 NOT_ON_PORTAL = ("van/alerts/set", "van/first_min/set", "van/second_min/set", "van/adjust/set",
-                 "pot_month/set",  # 1.8.1: the Pot month select (no contract change; the portal shows the months only)
+                 "pot_month/set",  # 1.8.2: the Pot month select (no contract change; the portal shows the months only)
                  "schedule/refresh")  # 1.8.2: the schedule card's refresh button (hidden on the portal)
 # the tabs of the portal (portal_layout.json), and the one each event opens (ntfy Click, the events list); 1.7.0: the
 # Tickets tab last, so the five tabs before it keep their places in the tab bar
@@ -728,7 +728,7 @@ ENTITY_PORTAL_FEATURE = {"tickets": "tickets", "uploads": "uploads", "upload_sta
 # near misses sensor (sensor.<prefix>_near_misses) is core and every instance computes its own, but a new exported state
 # is a portal contract change (PORTAL_CONTRACT.md 4.2): it waits for a later contract revision, so contract 1 revision 6
 # and a pilot's state.json stay exactly as they are.
-# 1.8.1: and the Pot month select (select.<prefix>_pot_month): the portal's clock card shows the months read from
+# 1.8.2: and the Pot month select (select.<prefix>_pot_month): the portal's clock card shows the months read from
 # sensor.<prefix>_state's pot_months attribute, read only (no new exported id, no new portal command)
 ENTITY_OFF_PORTAL = frozenset({"near_misses", "pot_month"})
 

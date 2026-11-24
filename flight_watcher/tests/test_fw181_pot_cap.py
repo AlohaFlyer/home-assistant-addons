@@ -1,4 +1,4 @@
-"""1.8.1 (C3): the pot sensor's row cap with two pots. With the Pot month select on Both (Ryan: November's pot 003.152
+"""1.8.2 (C3): the pot sensor's row cap with two pots. With the Pot month select on Both (Ryan: November's pot 003.152
 and December's 003.153 on Nov 23), the check lists this month's rows first and the next month's after. The sensor
 (sensor.<prefix>_pot_count, pot/state) carries at most 60 rows and at most ATTR_MAX bytes; it used to keep flat[:60]
 and cap_attrs cut 'pairings' from the end, so December's rows (the month Ryan trades) were the ones cut, and the pot
@@ -162,7 +162,7 @@ def test_a_pilot_on_this_month_keeps_the_soonest_trips_in_date_order(mk):
 
 def test_the_size_stays_under_the_cap_and_nothing_is_cut_after(mk):
     """The payload publish_pot builds is already at or under ATTR_MAX, so cap_attrs passes it as it is (the fair
-    share is never undone by a cut from the end). 1.8.1 (C3 review T1): the payload is caught as publish_pot hands it
+    share is never undone by a cut from the end). 1.8.2 (C3 review T1): the payload is caught as publish_pot hands it
     to pub(), before cap_attrs (the one MQ.last holds has been through cap_attrs already, so it could never fail)."""
     W = mk("", t=at(2026, 11, 23))
     seen, cap = [], W.cap_attrs
@@ -236,7 +236,7 @@ def test_the_portal_pot_card_shows_the_count_and_how_many_are_not_shown(width, s
 
 
 def test_the_pot_card_with_no_row_on_the_sensor_never_says_the_pot_is_empty():
-    """1.8.1 (C3 review T2): the pot has 45 trips but none is on the sensor (count 45, pairings []) and no Tradeboard
+    """1.8.2 (C3 review T2): the pot has 45 trips but none is on the sensor (count 45, pairings []) and no Tradeboard
     pickup: the card gives the count and "45 not shown", never "The open time pot is empty"."""
     with _browser() as b:
         got = _portal_page(b, [_card("pot-card")]).evaluate(READ_JS % "flight-watcher-pot-card-pilot2",
@@ -293,7 +293,7 @@ def _sched(a, admin=False):
 
 @pytest.mark.parametrize("width,scheme", [(390, "light"), (390, "dark"), (1100, "light")])
 def test_the_schedule_cards_open_column_says_how_many_pot_trips_are_not_shown(width, scheme):
-    """1.8.1 (C3-R1): the schedule card (on the admin's Home Assistant Watcher view and on a pilot's portal) draws the
+    """1.8.2 (C3-R1): the schedule card (on the admin's Home Assistant Watcher view and on a pilot's portal) draws the
     Open column and the Ideas' O marks from the pot sensor's rows. With two pots it carries a fair share of each
     month, so a line under the totals says how many pot trips are not shown there and that the Watcher still watches
     all of them; an older Watcher's payload (count, no "trimmed") gives the same line; none when nothing is cut."""
@@ -330,7 +330,7 @@ def test_no_em_dash_and_short_lines_in_the_change():
     for f in ("tests/test_fw181_pot_cap.py",):
         text = open(os.path.join(here, f), encoding="utf-8").read()
         assert "\u2014" not in text and all(len(x) <= 120 for x in text.splitlines()), f
-    # 1.8.1 (C3-R1): the schedule card's new lines (the card's older lines are longer; these are not)
+    # 1.8.2 (C3-R1): the schedule card's new lines (the card's older lines are longer; these are not)
     sched = open(os.path.join(here, "www", "flight-watcher-schedule-card.js"), encoding="utf-8").read().splitlines()
     new = [x for x in sched if "potCut" in x or "potOff" in x or "potN" in x or "(C3-R1)" in x
            or "Ideas' O marks" in x]

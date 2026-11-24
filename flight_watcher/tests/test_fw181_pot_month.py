@@ -1,4 +1,4 @@
-"""1.8.1 (Ryan, Nov 23, 2026: "Always look for the new pot each month. It's a different bcid"; "I'm working on Dec
+"""1.8.2 (Ryan, Nov 23, 2026: "Always look for the new pot each month. It's a different bcid"; "I'm working on Dec
 now"): the open time pot follows the bid month. Each check reads the pot page of the bid month(s) the Pot month select
 chooses (This month, Next month, Both), from that month's own BCID: learned (Ryan's two links, then each month whose
 page read with its own trips), named by a menu or pot page link, or derived from the latest learned month. A page of
@@ -332,7 +332,7 @@ def test_the_old_rediscovery_and_hard_coded_page_are_gone():
     assert "def discover_pot_urls" not in src and "MOBILE_POT" not in src
 
 
-# ---------------------------------------------------------------- 1.8.1 review fixes
+# ---------------------------------------------------------------- 1.8.2 review fixes
 SEC = "OPEN TIME- Add/Swap/Drop requests"
 
 

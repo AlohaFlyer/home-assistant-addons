@@ -167,7 +167,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("flight_watcher")
 
-# 1.8.1 (Ryan, Nov 23, 2026: "Always look for the new pot each month. It's a different bcid"): the open time pot's
+# 1.8.2 (Ryan, Nov 23, 2026: "Always look for the new pot each month. It's a different bcid"): the open time pot's
 # BCID follows the HST bid month (1.8.0 read BCID 003.152, November's, for good). Anchor: Ryan's November 2026 mobile
 # pot (mobileopentimepot.cgi?BCID=003.152, the page 1.8.0 read) and his December 2026 link (otframe.cgi?BCID=003.153,
 # Nov 23): the suffix goes up by one a bid month, 003 is the category's prefix (HNL 332 FO). Every month's BCID is
@@ -177,7 +177,7 @@ POT_BCID_SEED = {"2026-11": "003.152", "2026-12": "003.153"}  # Ryan's two links
 
 
 def pot_bcid(year, month, anchor=None):
-    """1.8.1 (D1): the open time pot BCID of an HST bid month from an anchor ((year, month), prefix, suffix), by
+    """1.8.2 (D1): the open time pot BCID of an HST bid month from an anchor ((year, month), prefix, suffix), by
     default POT_BCID_ANCHOR: the anchor's suffix plus the months between (Nov 2026 003.152, Dec 2026 003.153, Jan 2027
     003.154, Dec 2027 003.165)."""
     (ay, am), prefix, suffix = anchor or POT_BCID_ANCHOR
@@ -185,7 +185,7 @@ def pot_bcid(year, month, anchor=None):
 
 
 def mobile_pot_url(b):
-    """1.8.1 (D1): the frameless mobile open time page of a BCID, the page the parsers read (never otframe.cgi)."""
+    """1.8.2 (D1): the frameless mobile open time page of a BCID, the page the parsers read (never otframe.cgi)."""
     return f"{BASE}/full/mobileopentimepot.cgi?BCID={b}&From=MainMenu"
 
 
@@ -448,7 +448,7 @@ def on_message(c, u, msg):
             FLAGS["full"] = True
             wake = wake_check("re-arm")
         log.info("re-arm pressed" + (f": {why}" if why else ""))
-    elif msg.topic == f"{T}/pot_month/set":  # 1.8.1 (D2): This month, Next month or Both (never a portal command)
+    elif msg.topic == f"{T}/pot_month/set":  # 1.8.2 (D2): This month, Next month or Both (never a portal command)
         wake = pot_month_cmd(c, msg.payload.decode(errors="replace"))
     elif msg.topic == f"{T}/schedule/refresh":  # 1.8.2 (S4): the schedule card's refresh button (never a portal's)
         wake = schedule_refresh_cmd(msg.payload.decode(errors="replace"))
@@ -667,7 +667,7 @@ def connect_states(c):
     on_connect have restored FLAGS: the switches, and Would drop (count 0 when nothing is marked)."""
     try:
         publish_switches(c)
-        publish_pot_month(c)  # 1.8.1: the Pot month select, from the Watcher's own state
+        publish_pot_month(c)  # 1.8.2: the Pot month select, from the Watcher's own state
         publish_drop()
     except Exception as e:
         log.info("connect states skipped: %s", e)
@@ -1275,7 +1275,7 @@ def drop_scan():
             continue
         if k in ready:
             continue
-        # 1.8.1 (T10, LIVE-6): the folder of the trip's own bid period (a drop is filed inside one BCID: a December
+        # 1.8.2 (T10, LIVE-6): the folder of the trip's own bid period (a drop is filed inside one BCID: a December
         # trip's in December's), never the earliest watched one
         period_of = period_of or bid_period_fn()
         month = _own_period(it["trip"], it["start"], period_of)
@@ -1596,7 +1596,7 @@ def entity_defs():
                                     "min": efl["hunt_s"][0], "max": efl["hunt_s"][1],
                                     "step": 5, "mode": "slider", "unit_of_measurement": "s",
                                     "icon": "mdi:timer-alert-outline"}),
-        # 1.8.1 (D2, Ryan Nov 23): which bid month's open time pot each check reads (pot_plan): This month (default),
+        # 1.8.2 (D2, Ryan Nov 23): which bid month's open time pot each check reads (pot_plan): This month (default),
         # Next month (once its pot is open, else this month's) or Both. Every instance; off a portal (roles)
         ("select", "pot_month", {"name": "Pot month", "command_topic": f"{T}/pot_month/set",
                                  "state_topic": f"{T}/pot_month/state", "options": list(POT_MODES),
@@ -1927,7 +1927,7 @@ def page_verdict(path, url, html):
             return "error"
     return ""
 # the state note the gate, the pace and the breakers last put up; 1.7.3: brk is the breakers' part of it as health_note
-# last saw it (health_note_tick); 1.8.1: pot, the pot months' part (pot_note: a refused page, this month not found);
+# last saw it (health_note_tick); 1.8.2: pot, the pot months' part (pot_note: a refused page, this month not found);
 # 1.8.2 (S6): smart, a bid month read with no month type in smart.json (smart_month_note)
 HEALTH = {"note": "", "gate": "", "held": "", "brk": "", "pot": "", "smart": ""}
 
@@ -2310,7 +2310,7 @@ def state_attrs(note):
     """sensor.<prefix>_state's attributes (set_machine; 1.6.4: also right after a date of hire is saved)."""
     return {"note": note, "version": VERSION, "since": S.get("since") or "", "instance": INSTANCE, "doh": pilot_doh(),
             "role": ROLES.role(INSTANCE), "features": ROLES.features(INSTANCE),  # 1.5.0 (FW-0063)
-            "pot_mode": pot_mode(), "pot_months": pot_months_attr()}  # 1.8.1 (D4): the clock card's Pot month
+            "pot_mode": pot_mode(), "pot_months": pot_months_attr()}  # 1.8.2 (D4): the clock card's Pot month
 
 
 def pilot_doh():
@@ -2476,7 +2476,7 @@ class Flica:
             page.close()
 
     def menu_pot_bcids(self, want, pre=""):
-        """1.8.1 (D1b): look on the main menu for the open time pot of the bid months `want` ({'November': '2026-11',
+        """1.8.2 (D1b): look on the main menu for the open time pot of the bid months `want` ({'November': '2026-11',
         ...}), read only: the main menu (one load through the gate), and of each 'View Opentime Pot' link under the
         OPTS pot_section heading for one of those months, the BCID the link itself names (no click) or else the
         BCID of the frame it opens (one click, one load through the gate, only while no link named one for that
@@ -2862,7 +2862,7 @@ def mirror_links():
     this month and the next."""
     pots = [u for u in (S.get("pot_urls") or {}).values() if MR.page_kind(u) == "pot"]
     pots = sorted(dict.fromkeys(pots), key=lambda u: bcid_key(bcid(u)) if bcid(u) else (0,)) or \
-        [mobile_pot_url(pot_bcid_now())]  # 1.8.1: before any is planned, this month's
+        [mobile_pot_url(pot_bcid_now())]  # 1.8.2: before any is planned, this month's
     out = [("Open time" if i == 0 else "Open time next", u) for i, u in enumerate(pots[:2])]
     shape = S.get("sched_shape_mobile") or "/full/mobileschedule.cgi?BlockDate={bd}&From=MainMenu"
     now = local_now()
@@ -3318,7 +3318,7 @@ def run_rules(month, key, row):
         lst = list(RULES["list"])
     if not lst:
         return
-    # 1.8.1 (POT-10): the rule months are the HST bid months: 'current' is today's (this_month_key; Dec 1 is still
+    # 1.8.2 (POT-10): the rule months are the HST bid months: 'current' is today's (this_month_key; Dec 1 is still
     # November's), and a trip counts in the bid month of its first day (bid_period_fn), never the UTC calendar's
     per = bid_period_fn()
     hits = R.evaluate(lst, row, DB.live_flags(), DB.would_submits_since(hst_midnight_utc()),
@@ -3582,7 +3582,7 @@ def bid_period_of(d):
     crew index and the cards use (crewidx.period_for: Dec 1, 2026 is November's, whose period runs Nov 1 to Dec 1),
     or None when no pairing file speaks for it (no file for that month, and none made it another month than the
     calendar's): smart.bid_month then reads the bid month off the schedule pages. The bounds are cached 10 min."""
-    if not 0 <= time.time() - BID_PERIODS["at"] <= BID_PERIODS_TTL_S:  # 1.8.1: a clock set back empties it too
+    if not 0 <= time.time() - BID_PERIODS["at"] <= BID_PERIODS_TTL_S:  # 1.8.2: a clock set back empties it too
         BID_PERIODS.update(at=time.time(), bounds={}, files={})
     mon = CI.period_for(CARD_PAIRINGS, d.isoformat(), BID_PERIODS["bounds"])
     if mon not in BID_PERIODS["files"]:
@@ -3616,7 +3616,7 @@ def bid_bounds(month):
     """1.7.11 (FW-0080): (first day, last day, src) of month's bid period for the schedule card: the pairing files'
     bounds (crewidx.period_start / period_end) when they speak for it, src 'package'; else the days the schedule pages
     on file give month (bid_period_key), src 'schedule'; else the calendar month, src 'calendar'."""
-    if not 0 <= time.time() - _BID_BOUNDS["at"] <= BID_PERIODS_TTL_S:  # 1.8.1: a clock set back empties it too
+    if not 0 <= time.time() - _BID_BOUNDS["at"] <= BID_PERIODS_TTL_S:  # 1.8.2: a clock set back empties it too
         _BID_BOUNDS.update(at=time.time(), v={})
     if month not in _BID_BOUNDS["v"]:
         _BID_BOUNDS["v"][month] = _bid_bounds(month)
@@ -7056,11 +7056,13 @@ def other_month_fresh_s(mon, cur_month):
 
 def other_month_age(mon, store=None, now=None):
     """Seconds since the month was last read on Schedule Lookup (read_ts: the read's start); inf when never. 1.8.2
-    (council loop 3, R2): or as the current month on the mobile page (accept() stamps that copy's read_ts), so the month
-    that was current until 00:00 is not loaded again at once as a past one."""
+    (council loop 3, C3-1): a copy from the mobile page (the month that was current until 00:00 on Ryan's path) never
+    counts, so once its bid period is over the month gets one Schedule Lookup read at the next spare load. That read is
+    its baseline for the move path (sched_change records moves only between two reads of the same page), so a change
+    on its page alone in the next 24 h is pushed, not only logged; then it is fresh SCHED_PAST_FRESH_S."""
     rec = ((S.get("schedule") or {}) if store is None else store).get(mon) or {}
     try:
-        ts = float(rec.get("read_ts") or 0)
+        ts = float(rec.get("read_ts") or 0) if rec.get("src") == "lookup" else 0
     except (TypeError, ValueError):
         ts = 0
     return ((time.time() if now is None else now) - ts) if ts else float("inf")
@@ -7236,7 +7238,7 @@ def other_months_check(fl, cur_month):
     """0.8.5 (Ryan: October now, December once it is published): Tools > Schedule Lookup for Ryan's own
     number lists every month FLICA holds in its <select> (1026, 1126, later 1226); each listed month other
     than the current one is read with bd=MMYY (GET only) and parsed like a picker's month, so the FAR 30 in
-    7 / 100 in 672 columns can look back and forward. Returns True when every listed month is in. 1.8.1: a month's
+    7 / 100 in 672 columns can look back and forward. Returns True when every listed month is in. 1.8.2: a month's
     load error waits its back-off (other_failed) and the pass goes on; each month read keeps the current month's
     stamp (cur_stamp, other_month_stale)."""
     emp = S.get("own_emp")
@@ -7301,7 +7303,7 @@ def other_months_check(fl, cur_month):
             waiting = True
             break
         except GT.BreakerOpen:
-            raise  # 1.8.1: a pause, a stop or an open breaker ends the pass as before (the month's mark stays)
+            raise  # 1.8.2: a pause, a stop or an open breaker ends the pass as before (the month's mark stays)
         except Exception as e:  # 1.8.1 review: a load error waits the month's back-off, so it is not loaded every read
             stale.pop(mon, None)  # 1.8.2: a mark is served by this load, read or not
             log.info("own schedule %s (bd=%s): load error %s", mon, bd, type(e).__name__)
@@ -7312,7 +7314,7 @@ def other_months_check(fl, cur_month):
         sp = IF.parse_cm_month(page) if classify(page) == "ok" else None
         if sp and sp["month"] == mon:
             SCHED_READ["lookup_ok"] = True
-            BRK.ok("lookup")  # 1.8.1 review: a good Schedule Lookup page ends a run of failed ones
+            BRK.ok("lookup")  # 1.8.2 review: a good Schedule Lookup page ends a run of failed ones
             if {bd, bdc} <= set(re.findall(r'<option value="(\d{4})"', page)):
                 # 1.8.2 (current-lookup-page-fails-starves-other-months): its month list (the same select) keeps the
                 # list, so a current month page that fails holds back only its totals, never the other months
@@ -7389,7 +7391,7 @@ def sched_seen(month, removed, added, read_at, moves):
     loss), an open copy of the drop made a second, false Trade with a later assignment, and two schedule_changed
     pushes went out. S sched_seen {'TRIP start': {side, month, at, moves}} keeps each change (removed: drop, added:
     add) TR.KEEP_DAYS with the page that saw it first and whether that page recorded its FW-0064 moves (a state from
-    1.8.1: the trip's newest move on file). Returns (told, moved): the changes in removed and added another month's
+    1.8.2: the trip's newest move on file). Returns (told, moved): the changes in removed and added another month's
     page saw the same way last (left out of this page's event) and, of those, the ones whose moves it recorded (left
     out of this page's moves). A change this page sees first, or again after the trip moved the other way, is noted
     for it. moves: this page records its moves (sched_change's same page)."""
@@ -7931,8 +7933,6 @@ def _schedule_read(fl, force):
         old = store.get(s["month"])
         read_at = now_iso()
         s["read_at"] = read_at  # 1.8.2 (S4): the card's refresh button waits for this (or 'updated') to move
-        if s.get("src") != "lookup":  # 1.8.2 (council loop 3, R2): the mobile page's read counts as the month's read
-            s["read_ts"] = read_stamp()  # too, so once its bid period is over (Dec 2) November is fresh 24 h from it
         if s.get("updated"):  # 1.8.1: FLICA's stamp for the whole schedule, so a later month it moved is read again
             S["sched_stamp"] = s["updated"]
         stamp_marks(cur_month)  # 1.8.2 (merge of 1.8.1): such a month is marked before the spare load is given out
@@ -8191,7 +8191,7 @@ def capture(fl, month, html):
         from bs4 import BeautifulSoup
         from urllib.parse import urljoin
         cap_write(f"pot_{month}.html", html)
-        url = (S.get("pot_urls") or {}).get(month) or mobile_pot_url(pot_pick(month)[0])  # 1.8.1: a try's page too
+        url = (S.get("pot_urls") or {}).get(month) or mobile_pot_url(pot_pick(month)[0])  # 1.8.2: a try's page too
         links = [{"text": a.get_text(" ", strip=True)[:60], "href": urljoin(url, a["href"])}
                  for a in BeautifulSoup(html, "html.parser").find_all("a", href=True)]
         cap_write(f"links_{month}.json", links)
@@ -8217,7 +8217,7 @@ TB_PROBE = {"done": False}
 REQ_IDLE_GAP_S = 900     # 1.2.0: Open Time Requests read every 15 min,
 REQ_PENDING_GAP_S = 120  # every 2 min while a request is pending, and right after a yield to Ryan's own login
 REQ_FIRST_H = 6  # the feature's first read: decisions filed this recently are still pushed
-REQ_FIRST_V = 1  # 1.8.1 (T3, S7): the per-folder first read marks, seeded once from the folders read before
+REQ_FIRST_V = 1  # 1.8.2 (T3, S7): the per-folder first read marks, seeded once from the folders read before
 
 
 MON3 = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
@@ -8367,7 +8367,7 @@ STOP_KINDS = ("killed", "expired", "blocked")  # pages that end the pass (classi
 
 
 def close_in_url(b):
-    return mobile_pot_url(b)  # 1.8.1: the close-in folder's page is the same mobile open time page shape
+    return mobile_pot_url(b)  # 1.8.2: the close-in folder's page is the same mobile open time page shape
 
 
 def _regular_bcids():
@@ -8375,7 +8375,7 @@ def _regular_bcids():
 
 
 def _close_in_periods():
-    """1.8.1 (POT-11, R4A-1): the bid period the close-in folder is of, as BCID last parts ({'152'}): today's
+    """1.8.2 (POT-11, R4A-1): the bid period the close-in folder is of, as BCID last parts ({'152'}): today's
     (this_month_key: Dec 1 is still November's), whatever the Pot month select, since trips under 16 h to report are of
     today's bid period (on Next month the pot read is December's, yet the close-in trips are November's). From this
     month's pot BCID: its watched page's, else its pick. The state on hand only: no FLICA load."""
@@ -8394,7 +8394,7 @@ def close_in_scan(html, via):
         ci = S.get("close_in") or {}
         ex = reg | {f"001.{b.split('.')[-1]}" for b in reg} | set(ci.get("rejected") or [])  # 001.n: Tradeboard
         found = close_in_folders(html, ex)
-        per = _close_in_periods()  # 1.8.1 (R4A-1): today's bid period, never the watched pots' (Next month)
+        per = _close_in_periods()  # 1.8.2 (R4A-1): today's bid period, never the watched pots' (Next month)
         b = pick_close_in(found, per)
     except Exception as e:
         log.info("close-in scan of the %s failed: %s", via, e)
@@ -8404,7 +8404,7 @@ def close_in_scan(html, via):
     ci = S.setdefault("close_in", {})
     cur = ci.get("bcid")
     if cur and b != cur and cur.split(".")[-1] in per and b.split(".")[-1] not in per:
-        return None  # 1.8.1 (R4A-1): a page naming only another bid period's folder never replaces today's
+        return None  # 1.8.2 (R4A-1): a page naming only another bid period's folder never replaces today's
     if ci.get("bcid") != b:
         log.info("close-in folder found on the %s: BCID %s ('%s'); its open time page is read next, GET only", via, b,
                  next(f["text"] for f in found if f["bcid"] == b))
@@ -8452,7 +8452,7 @@ def close_in_menu_read(fl):
     followed). Returns (the BCID found or None, kind): kind is 'ok', or 'killed' / 'expired' / 'blocked' when a menu
     page said so (the caller ends the pass as the pot loop does)."""
     ci = S.setdefault("close_in", {})
-    periods = _close_in_periods()  # 1.8.1 (R4A-1): today's bid period, whatever the Pot month select
+    periods = _close_in_periods()  # 1.8.2 (R4A-1): today's bid period, whatever the Pot month select
     settled = ci.get("verified") and (not periods or ci["bcid"].split(".")[-1] in periods)  # a new bid period: look again
     if time.time() - ci.get("menu_at", 0) < (CLOSE_IN_RECHECK_S if settled else CLOSE_IN_GAP_S):
         return None, "ok"
@@ -8601,7 +8601,7 @@ def close_in_check(fl, pot_all, full=False, moved_from=()):
             pub("event/new_pairing", ev, retain=False)
             pub("last_new", ev)
             run_rules(CLOSE_IN_KEY, k, rows[k])
-        for k in set(base) - set(pot) - set(regular):  # 1.8.1 (review R3): judged gone by this folder's good read
+        for k in set(base) - set(pot) - set(regular):  # 1.8.2 (review R3): judged gone by this folder's good read
             pend.setdefault(k, {"tries": 0, "next": time.time() + PICKUP_FIRST_S, "from": CLOSE_IN_KEY})
     DB.record_pot(CLOSE_IN_KEY, {k: rows.get(k) or regular[k] for k in pot}, new_keys)
     ci["baseline"] = sorted(pot)
@@ -8682,7 +8682,7 @@ def requests_check(fl):
     Each decision is pushed once ever (S['ot_req_pushed']); on the feature's very first read only decisions filed
     in the last REQ_FIRST_H hours are news. FW-0034: the close-in folder's list is read too once its BCID is verified
     (close_in_check); its decisions carry folder 'close-in', and its own first read pushes only the last REQ_FIRST_H
-    hours (older ones are history). 1.8.1 (T3, S7): so does every folder's (and Tradeboard number's) own first read,
+    hours (older ones are history). 1.8.2 (T3, S7): so does every folder's (and Tradeboard number's) own first read,
     so a bid month that joins later (Pot month Both, or December on Dec 2) never pushes its whole history."""
     req_first_seed()
     rows_of = S.setdefault("ot_req_rows", {})  # bcid -> rows of the last good read
@@ -8750,7 +8750,7 @@ def requests_check(fl):
                 empty[b] = empty.get(b, 0) + 1
                 log.info("requests %s: list empty after %d rows, read again before believing it", b, len(rows_of[b]))
                 continue
-            # 1.8.1 review (F2A-1): a folder's first read is a list with rows, or its second empty read in a row. An
+            # 1.8.2 review (F2A-1): a folder's first read is a list with rows, or its second empty read in a row. An
             # error page that only says 'request', or a list shown empty for a moment, never uses it up
             mark = bool(rows) or bool(done_first.get(b)) or empty.get(b, 0) >= 1
             if mark:
@@ -8758,7 +8758,7 @@ def requests_check(fl):
             else:
                 empty[b] = 1
             _pending_legs(fl, b, rows)  # FW-0064 review: a pending swap's trips, so the schedule can decide it
-            first_b = first or not done_first.get(b)  # 1.8.1 (T3, S7): each folder's own first read, not only close-in
+            first_b = first or not done_first.get(b)  # 1.8.2 (T3, S7): each folder's own first read, not only close-in
             for r in SUB.request_news(pushed, rows):
                 try:
                     old = _filed_at(r, now) < now - timedelta(hours=REQ_FIRST_H)
@@ -8829,7 +8829,7 @@ def requests_check(fl):
         for k in [k for k in S.get("req_cap_views") or {} if k.split("|")[0] not in folders]:
             S["req_cap_views"].pop(k, None)
         for b in [x for x in empty if x not in folders]:
-            empty.pop(b, None)  # 1.8.1 review (F2A-1): empty reads count in a row while the folder is watched
+            empty.pop(b, None)  # 1.8.2 review (F2A-1): empty reads count in a row while the folder is watched
         nums = {b.split(".")[-1] for b in regular}
         for n in [x for x in trows_of if x not in nums]:
             trows_of.pop(n, None)
@@ -9067,7 +9067,7 @@ def req_cap_pass():
 
 
 def req_first_seed():
-    """1.8.1 (T3, S7), once after the update: the first read marks of the folders and Tradeboard numbers read before
+    """1.8.2 (T3, S7), once after the update: the first read marks of the folders and Tradeboard numbers read before
     (their last good reads on file, S ot_req_rows and tb_req_rows: November's 003.152 and 152), so they are not new.
     Their decisions still push as before (none lost) and nothing already pushed goes out again; a folder never read
     (December's 003.153 and 153) gets its own first read. No FLICA load."""
@@ -9087,10 +9087,10 @@ def _trade_requests_check(fl, folders, trows_of, pushed, now):
     event/request_decided once (type Trade, with Pay-Gross), like an open time request; while one reads Processing
     or Pending the list is read every 2 min. The first read of each month (and a page that mentions a trade the
     parser cannot read) is kept privately in CAPTURE_DIR for parser checks. True when at least one page was read.
-    1.8.1 (T3): each number's own first read pushes only decisions filed in the last REQ_FIRST_H hours."""
+    1.8.2 (T3): each number's own first read pushes only decisions filed in the last REQ_FIRST_H hours."""
     ok = False
     first = not S.get("tb_req_init")
-    done_first = S.setdefault("tb_req_first_done", {})  # 1.8.1 (T3): the numbers whose first read is done
+    done_first = S.setdefault("tb_req_first_done", {})  # 1.8.2 (T3): the numbers whose first read is done
     for n in sorted({b.split(".")[-1] for b in folders}):
         url = TB.my_requests_url(BASE, n)
         if not (SUB.safe_get(url) and SM.safe_get(url)):
@@ -9114,11 +9114,11 @@ def _trade_requests_check(fl, folders, trows_of, pushed, now):
                 except Exception:
                     pass
             if page_verdict("tradeboard", url, html) != "ok":
-                # 1.8.1 review (F2A-1, R1): the gate's own check (Flica._loaded): a page it judged not a Tradeboard
+                # 1.8.2 review (F2A-1, R1): the gate's own check (Flica._loaded): a page it judged not a Tradeboard
                 # page (maintenance, error) is no read at all, so it never uses up the number's first read
                 log.info("trade requests %s: not a Tradeboard page, skipped: %s", n, page_log(text[:120]))
                 continue
-            first_n = first or not done_first.get(n)  # 1.8.1 (T3): this number's own first read too
+            first_n = first or not done_first.get(n)  # 1.8.2 (T3): this number's own first read too
             for r in SUB.request_news(pushed, rows):
                 try:
                     old = _filed_at(r, now) < now - timedelta(hours=REQ_FIRST_H)
@@ -9139,7 +9139,7 @@ def _trade_requests_check(fl, folders, trows_of, pushed, now):
                 if r["status"] in SUB.DECIDED:
                     pushed[SUB.push_key(r)] = now_iso()
             trows_of[n] = rows
-            if not odd:  # 1.8.1 review (R1): a page whose trades the parser cannot read is not the first read
+            if not odd:  # 1.8.2 review (R1): a page whose trades the parser cannot read is not the first read
                 done_first[n] = now_iso()
             ok = True
         except GT.BreakerOpen:  # 1.6.2 review: given up or left out by the gate: not a failed read
@@ -9495,7 +9495,7 @@ def grid_check(fl, full=False):
         b = bcid(u)
         if not b:
             continue
-        # 1.8.1: each pot page's own grid (Both: this month's and next month's); its dates take the year of its bid
+        # 1.8.2: each pot page's own grid (Both: this month's and next month's); its dates take the year of its bid
         # month, so January's grid read in December keys 2027 days
         yr, gm = local_now().year, (m if MONTH_KEY_RE.match(str(m)) else None)
         try:
@@ -9559,7 +9559,7 @@ def swap_map_probe(fl):
     if not has("auto_swap"):
         return
     os.makedirs(f"{CAPTURE_DIR}/swapmap", exist_ok=True)
-    pot_b = pot_bcid_now()  # 1.8.1: the BCID of the pot the Watcher reads (the swap map's 001.{b} and 003.{b} too)
+    pot_b = pot_bcid_now()  # 1.8.2: the BCID of the pot the Watcher reads (the swap map's 001.{b} and 003.{b} too)
     b = pot_b.split(".")[-1]
     queue = [("main menu", BASE + "/online/mainmenu.cgi"), ("mobile pot", mobile_pot_url(pot_b)),
              ("OT drop view", f"{BASE}/full/mobileschedule.cgi?BCID=001.{b}&Priority=1&From=MobileOTDrop"),
@@ -13566,7 +13566,7 @@ def publish_swap_tests():
 
 
 def draft_bcid(month):
-    """1.8.1 (POT-5, LIVE-6, T10): the pot folder (BCID) a swap or drop draft of a trip of bid month `month` names.
+    """1.8.2 (POT-5, LIVE-6, T10): the pot folder (BCID) a swap or drop draft of a trip of bid month `month` names.
     FLICA files a request inside one BCID, so it is that month's own: its watched page's (S pot_urls), else its pick
     (pot_pick: a menu link, the learned one, else the derivation). None when the month is not known (the draft then
     says so), never another month's folder: R4A-4, nor a pick refused for the month, nor one not learned whose last
@@ -13577,14 +13577,14 @@ def draft_bcid(month):
     if b:
         return b
     b, how = pot_pick(month)
-    # 1.8.1 (R4A-4): never a pick refused for the month (another month's trips) or, not learned, not its pot (yet)
+    # 1.8.2 (R4A-4): never a pick refused for the month (another month's trips) or, not learned, not its pot (yet)
     if b in pot_banned(month) or (how != "learned" and pot_status(month) in POT_BAD):
         return None
     return b
 
 
 def draft_close_in(month):
-    """1.8.1 (R4A-2): the close-in folder (BCID) a draft of a trip of bid month `month` names: the one trusted (S
+    """1.8.2 (R4A-2): the close-in folder (BCID) a draft of a trip of bid month `month` names: the one trusted (S
     close_in_bcid) only when it is that bid period's (its last part is that of the month's pot folder, draft_bcid), else
     None, never another month's: on Dec 1 the folder read is November's, so a December trip reporting Dec 2 inside 16 h
     names none (the draft says December's is not read)."""
@@ -13593,14 +13593,14 @@ def draft_close_in(month):
 
 
 def _draft_month(rec, month):
-    """1.8.1 (POT-5): a draft record names the bid month its folder is of; a pot (or, R4A-2, close-in) folder not known
+    """1.8.2 (POT-5): a draft record names the bid month its folder is of; a pot (or, R4A-2, close-in) folder not known
     says so."""
     ok = isinstance(month, str) and bool(MONTH_KEY_RE.match(month))
     rec["bid_month"] = month if ok else ""
     if rec.get("folder") == "pot" and not rec.get("bcid"):
         rec["why"] = (f"{SUB.DRAFT}: the pot BCID of " + (month_name(month) if ok else "its bid month") +
                       " is not known (no other month's folder is named)")
-    elif rec.get("folder") == "close-in" and not rec.get("bcid"):  # 1.8.1 (R4A-2): draft_close_in
+    elif rec.get("folder") == "close-in" and not rec.get("bcid"):  # 1.8.2 (R4A-2): draft_close_in
         rec["why"] = (f"{SUB.DRAFT}: the close-in folder BCID of " + (month_name(month) if ok else "its bid month") +
                       " is not read yet (no other month's folder is named)")
     return rec
@@ -13613,7 +13613,7 @@ def swap_test(idea):
     idea (auto: True), which only shows on the sensor."""
     if idea.get("auto"):
         return
-    # 1.8.1 (POT-5, LIVE-6): the folder of the idea's bid month (swap_scan's bid_month: the pot row's, which is his
+    # 1.8.2 (POT-5, LIVE-6): the folder of the idea's bid month (swap_scan's bid_month: the pot row's, which is his
     # trip's; else his trip's own bid period), never the earliest watched one
     give_trip, give_start = idea["for"].split("|")[:2]
     month = idea["bid_month"] if "bid_month" in idea else _own_period(give_trip, give_start, bid_period_fn())
@@ -13849,7 +13849,7 @@ def swap_scan(pot_rows, read=None, quiet=()):
     the marked ideas' pay figures from the end, so no more of them are trimmed than 1.7.11 trimmed; then cap_attrs
     trims "ideas" from the end, the least soft time first, as in 1.7.11). Reads the rows and the state on hand only:
     no FLICA load.
-    1.8.1: read, the pot months whose rows this check holds (None: every row's month counts as read), and quiet, the
+    1.8.2: read, the pot months whose rows this check holds (None: every row's month counts as read), and quiet, the
     months whose read this check was their first (D3): an idea of a quiet month is noted in swap_seen without a push;
     a pushed idea of a month not read this check (a page refused or skipped, a month the select left) stays in
     swap_seen until its trip starts, so it is not pushed again when its month is read again. POT-9: a marked trip's
@@ -13878,7 +13878,7 @@ def swap_scan(pot_rows, read=None, quiet=()):
         for row in rows:
             if row.get("pairing") == trip or touches_vac(row) or touches_blocked(row):
                 continue
-            # 1.8.1 (POT-9): a FLICA swap stays inside one BCID: only a trip of his trip's bid period (the pot's own
+            # 1.8.2 (POT-9): a FLICA swap stays inside one BCID: only a trip of his trip's bid period (the pot's own
             # bid month, _pot_period, against his trip's, _own_period), as swap_auto keeps
             row_days = _trip_days(row)
             if _pot_period(row, row_days[0] if row_days else "", period_of) != per:
@@ -13925,7 +13925,7 @@ def swap_scan(pot_rows, read=None, quiet=()):
         ev = dict(i, key=k, at=now_iso())
         rep = next((r.get("report", "") for r in rows
                     if r.get("pairing") == i["pairing"] and r.get("start") == i["start"]), "")
-        swap_test(dict(i, key=k, report=rep, bid_month=idea_per.get(k, "")))  # 1.8.1 (POT-5): its folder's month
+        swap_test(dict(i, key=k, report=rep, bid_month=idea_per.get(k, "")))  # 1.8.2 (POT-5): its folder's month
         if S.get("auto_swap") and has("auto_swap"):
             done = S.setdefault("auto_swap_log", {})
             if done.get(today, 0) < AUTO_SWAP_PER_DAY:
@@ -13940,7 +13940,7 @@ def swap_scan(pot_rows, read=None, quiet=()):
     sm = dict(S.get("swap_seen_month") if isinstance(S.get("swap_seen_month"), dict) else {})
     sm.update({k: m for k, m in idea_month.items() if k in seen})
     held = set()
-    if read is not None:  # 1.8.1: an idea of a month not read this check is kept until its trip starts
+    if read is not None:  # 1.8.2: an idea of a month not read this check is kept until its trip starts
         this, today_d = this_month_key(), local_now().date()
         for k in seen - live:
             m = sm.get(k)
@@ -14003,7 +14003,7 @@ def pickup_check(fl, full=False):
     the FO/RO seat that was open, plus the CA. A seat still Open on the pairing page while the trip
     is not in the open time pot is stored as status 'open' (dashboard: suspected hidden by
     scheduling) and rechecked hourly until it is filled or the trip starts. Gone finds from before
-    0.3.7 are back-filled once. Returns True when any pickup record changed. 1.8.1 (POT-2, review R1, R3, F1-R2): a
+    0.3.7 are back-filled once. Returns True when any pickup record changed. 1.8.2 (POT-2, review R1, R3, F1-R2): a
     pickup queued by a good read of the folder the trip left ('from': a month's pot, the close-in folder, an email find
     judged) is judged by that read; any other (1.8.0's, an email find of a month not read) takes an Open seat as a
     verdict only in a check that read its bid month's pot OK, else it waits with its stored record untouched."""
@@ -14032,7 +14032,7 @@ def pickup_check(fl, full=False):
         S["ids_backfilled"] = True
     done, now, n = False, time.time(), 0
     for k, p in list(pend.items()):
-        if k in POT_JUDGE["live"]:  # 1.8.1 (POT-2): in a pot this check, so open: no pickup to check, no load (it is
+        if k in POT_JUDGE["live"]:  # 1.8.2 (POT-2): in a pot this check, so open: no pickup to check, no load (it is
             pend.pop(k, None)  # queued again, judged, when it leaves its pot); review: due or not
             continue
         if n >= (FULL_MAX if full else PICKUP_PER_CHECK) or not BRK.allow("pairing"):
@@ -14090,7 +14090,7 @@ def pickup_check(fl, full=False):
         start = row_date(row.get("start") or (row.get("dates") or "").split("-")[0])
         started = bool(start and start < local_now().date())
         if status == "open" and not p.get("from") and find_period(k) not in POT_JUDGE["read"]:
-            # 1.8.1 (POT-2, LIVE-1; review R1, F1-R2): no read of its folder judged it gone and its bid month's pot was
+            # 1.8.2 (POT-2, LIVE-1; review R1, F1-R2): no read of its folder judged it gone and its bid month's pot was
             # not read OK this check, so a seat still Open is no hidden trip (it may sit in that pot): no verdict, no
             # push, and its stored record stands (an 'open' found before keeps it); rechecked as an open seat is, for
             # a check that reads its month, until the trip starts
@@ -14103,7 +14103,7 @@ def pickup_check(fl, full=False):
         if status == "filled":
             DB.set_pickup(k, {"status": "filled", "by": who, "ca": ca, "known": known, "pickers": pickers,
                               "at": now_iso()})
-            DB.close_finds({k: now_iso()})  # 1.8.1 (review R2): an email find of a month not read was stored open; a
+            DB.close_finds({k: now_iso()})  # 1.8.2 (review R2): an email find of a month not read was stored open; a
             # filled seat says it left the pot (gone now, an upper bound), so its dwell is scored (a find gone keeps it)
             # 1.7.10 (Ryan, Nov 15): by seat, never a name or an employee number (the card shows who)
             seats = ", ".join(pos for pos, _nm, _e in by_parts(who)) or "nobody named"
@@ -14312,7 +14312,7 @@ def email_alert(payload):
 
 
 def finds_period_close():
-    """1.8.1 (POT-6): a find still open whose trip's bid period has ended (its last day before today, HST) is in no
+    """1.8.2 (POT-6): a find still open whose trip's bid period has ended (its last day before today, HST) is in no
     pot any more, though no read stamped it gone: its month left the watch (the roll-over, a Pot month change, an
     email find of a month not read, 1.8.0's 'mobile' page that no plan reads). It is stamped gone at its period's end
     (00:00 HST after the last day), with no push and no pickup check, and its pickup is no longer pending. A trip in a
@@ -14348,7 +14348,7 @@ def finds_period_close():
 
 
 def find_period(key, of=None, today=None):
-    """1.8.1 (POT-2): the bid month ('YYYY-MM') of a find's trip (key 'TRIP|DDMon'): bid_period_key of its first day
+    """1.8.2 (POT-2): the bid month ('YYYY-MM') of a find's trip (key 'TRIP|DDMon'): bid_period_key of its first day
     (the pairing files' bounds: a Dec 1 trip is November's), its year the one row_date gives near today (HST); None
     when the day does not read."""
     d = row_date(str(key).partition("|")[2], today=today or local_now().date())
@@ -14359,7 +14359,7 @@ def email_check(fl, pot_all):
     """Add pairings from alert emails that are not finds yet (the pot moved faster than a check).
     One read-only detail GET each, so CA, times and the crew roster are known; a pairing not in
     the pot any more is stamped gone now and its pickup is tracked like any other find. 1.5.0 (FW-0063): the admin's
-    only (admin_pushes): a pilot instance never reads the queue. 1.8.1 (POT-2, LIVE-1, POT-8): a pairing is judged
+    only (admin_pushes): a pilot instance never reads the queue. 1.8.2 (POT-2, LIVE-1, POT-8): a pairing is judged
     gone (gone_at, its pickup check, so a hidden push and a speed) only against the pot of its own bid month
     (find_period), read OK in this check (POT_JUDGE); missing from the pots read is no proof it left when its month
     was not read (a December trip under This month): it is stored open, for a later read of its month to judge. It is
@@ -14378,7 +14378,7 @@ def email_check(fl, pot_all):
     for it in list(q):
         k = it["key"]
         per = find_period(k, of)
-        judged = k not in live and per in POT_JUDGE["read"]  # 1.8.1 (POT-2): its own month's pot, read OK now
+        judged = k not in live and per in POT_JUDGE["read"]  # 1.8.2 (POT-2): its own month's pot, read OK now
         if DB.has_find(k):
             if it.get("at") and DB.set_alert_at(k, it["at"]):  # 0.7.6: FLICA's alert time is the true pot-entry time
                 log.info("alert email: %s entered the pot at %s (pickup speed rescored)", k, it["at"])
@@ -14400,7 +14400,7 @@ def email_check(fl, pot_all):
         enrich(fl, ev)
         if ev.get("turn") and not ev.get("layover"):
             ev["layover"] = ev["turn"].split("/")[0]
-        month = live.get(k) or per or this_month_key()  # 1.8.1 (POT-8, P9, LIVE-11): the pot it is in, else its month
+        month = live.get(k) or per or this_month_key()  # 1.8.2 (POT-8, P9, LIVE-11): the pot it is in, else its month
         gone = now_iso() if judged else None
         if k not in live:  # roster read after it left the pot (or maybe so): no "before" to diff, names stay unbolded
             ev.pop("crew", None)
@@ -14419,7 +14419,7 @@ POT_SENSOR_ROWS = 60  # the most pot rows the sensor carries (under ATTR_MAX byt
 
 
 def _pot_row_key(r):
-    """1.8.1 (C3): a sensor row's place: close-in trips first, then by bid month, then start date and pairing. The
+    """1.8.2 (C3): a sensor row's place: close-in trips first, then by bid month, then start date and pairing. The
     start's year comes from the row's bid month ('01Dec' in November's runs to Dec 1; '31Dec' in January's is the
     December before), a close-in row's from today (HST)."""
     m = str(r.get("month") or "")
@@ -14430,7 +14430,7 @@ def _pot_row_key(r):
 
 
 def pot_sensor_rows(flat):
-    """1.8.1 (C3): {count, pairings[, trimmed]} for sensor.<prefix>_pot_count, at most POT_SENSOR_ROWS rows and at
+    """1.8.2 (C3): {count, pairings[, trimmed]} for sensor.<prefix>_pot_count, at most POT_SENSOR_ROWS rows and at
     most ATTR_MAX bytes. With Pot month Both the check lists this month's rows first and the next month's after, and
     flat[:60] plus cap_attrs' cut from the end left out the next month's (December's, the month Ryan trades). Now the
     close-in trips go first, then each bid month read takes a row in turn (its soonest first) while the payload fits,
@@ -14464,7 +14464,7 @@ def pot_sensor_rows(flat):
 
 
 def publish_pot(flat):
-    """sensor.<prefix>_pot_count: up to 60 pot rows (close-in first; 1.8.1 (C3): a fair share of each bid month read,
+    """sensor.<prefix>_pot_count: up to 60 pot rows (close-in first; 1.8.2 (C3): a fair share of each bid month read,
     by bid month then start date, pot_sensor_rows). far_why and the FW-0042 smart fields stay off the sensor
     (sensor_row: no card reads them there yet; they would cost rows under the 12 KB cap): the DB, the finds month
     files, last_new and event/new_pairing keep them (the finds sensor carries FINDS_ATTR_KEYS only).
@@ -14710,7 +14710,7 @@ def publish_near_misses(flat):
         log.info("near misses not published: %s: %s", type(e).__name__, e)
 
 
-# ---------------------------------------------------------------- 1.8.1: the open time pot follows the bid month
+# ---------------------------------------------------------------- 1.8.2: the open time pot follows the bid month
 # (Ryan, Nov 23, 2026: "Always look for the new pot each month. It's a different bcid"; "I'm working on Dec now".)
 # Each check reads the pot page of the bid month(s) the Pot month select chooses (This month, Next month, Both), each
 # from its own BCID (pot_pick): a BCID a menu or pot page link named for it, else the one learned for it (S pot_bcids:
@@ -14733,7 +14733,7 @@ POT_ROWS = {}  # month -> {"rows", "n"}: the rows of its last good read (memory 
 POT_SEQ = {"n": 0}  # planned checks so far (a month's cached rows stand in only in the check right after their read)
 POT_ATTR = {"last": None}  # the pot_months attribute last published
 POT_READ = {"months": set()}  # the bid months read in the last check (a try that read included), for pot_months
-# 1.8.1 (POT-2, LIVE-1): the bid months whose pot page was read OK in this check (no stand-in or cached rows) and the
+# 1.8.2 (POT-2, LIVE-1): the bid months whose pot page was read OK in this check (no stand-in or cached rows) and the
 # keys in a pot this check (stand-ins and the close-in folder too): a find is judged gone or hidden only against them
 POT_JUDGE = {"read": set(), "live": set()}
 MONTH_KEY_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
@@ -14885,7 +14885,7 @@ def pot_open(month):
 
 
 def pot_plan(this=None):
-    """1.8.1 (D2): (watch, tries) of this check, from the Pot month select; no FLICA load. watch {month: url}: the
+    """1.8.2 (D2): (watch, tries) of this check, from the Pot month select; no FLICA load. watch {month: url}: the
     pages read every check (S pot_urls). tries [month]: a month of the select whose pick is refused or not open, due
     again (POT_TRY_*), read this check too (and learned when its page reads as that month's pot).
     This month: this month's pot. Next month: the next month's once open, else this month's (one page either way).
@@ -14967,7 +14967,7 @@ def _link_month(text, ref):
 
 
 def pot_link_scan(html, url, month):
-    """1.8.1 (D1b): the BCID links on a pot page read anyway (no load). A link to another bid month's pot (its month
+    """1.8.2 (D1b): the BCID links on a pot page read anyway (no load). A link to another bid month's pot (its month
     from its text, else its suffix's distance from this page's own), with this page's prefix, never the close-in
     folder's (its text or BCID), becomes that month's candidate when the month has no learned BCID or its pick is
     refused or not open. A link never adds a month to the pages read: the Pot month select chooses them (This month
@@ -14995,7 +14995,7 @@ def pot_link_scan(html, url, month):
 
 
 def pot_look(fl, months):
-    """1.8.1 (D1b): the main menu walk for months (Flica.menu_pot_bcids, through the gate), at most every POT_LOOK_S
+    """1.8.2 (D1b): the main menu walk for months (Flica.menu_pot_bcids, through the gate), at most every POT_LOOK_S
     a month: a BCID it names becomes the month's candidate (pot_cand); when it names the month's pick (refused or not
     open at its last read), that pick is read this check instead of at its next try. Links of the latest learned
     month's category ('003') come first. Returns 'killed', 'expired' or ''. A menu that does not load ends the look
@@ -15039,7 +15039,7 @@ def pot_learn(month, b, how, why):
 
 def pot_category_ok(html):
     """The page names the pilot's category: OPTS category_check as a whole phrase of whole words, any case (the mobile
-    pot page's header reads "[HNL 332 FO]"). 1.8.1 review: a word inside another ('FO' in 'SFO' or 'for') or the
+    pot page's header reads "[HNL 332 FO]"). 1.8.2 review: a word inside another ('FO' in 'SFO' or 'for') or the
     words apart never count, so a page of HNL 332 CA with an SFO layover is refused."""
     cat = (OPTS.get("category_check") or "").lower().split()
     if not cat:
@@ -15049,7 +15049,7 @@ def pot_category_ok(html):
 
 
 def pot_verdict(month, url, html):
-    """1.8.1 (D1): what a pot page read (classify ok) is for its month: 'read' (the month's pot: parsed, baseline,
+    """1.8.2 (D1): what a pot page read (classify ok) is for its month: 'read' (the month's pot: parsed, baseline,
     finds), 'skip' (refused, not open yet, or an empty page on an unproven BCID: its status is kept, nothing else),
     or 'broken' (a page that read as this month's pot before is no open time page now: 1.8.0's layout check).
     A BCID not learned yet (a menu or link candidate, the derivation) counts only on a page of the pilot's category
@@ -15114,7 +15114,7 @@ def pot_verdict(month, url, html):
 
 
 def pot_carry(watch):
-    """1.8.1: the first plan after an update from 1.8.0: the baseline and header fingerprint of a pot page under an
+    """1.8.2: the first plan after an update from 1.8.0: the baseline and header fingerprint of a pot page under an
     old key ('mobile': BCID 003.152, 1.8.0's one page; 'mobile_<bcid>'; a month name from the menu walk) move to the
     bid month read now from the same BCID (or of that name), with its finds' month, so the update raises no alert and
     loses none."""
@@ -15154,7 +15154,7 @@ def pot_prune(this):
 
 
 def pot_prepare(fl):
-    """1.8.1: plan this check's pot pages (pot_plan, no load), after a main menu look when a month of the select needs
+    """1.8.2: plan this check's pot pages (pot_plan, no load), after a main menu look when a month of the select needs
     one (pot_look). Returns (stop, tries, cached): stop a check() result ('killed', 'needs_login') or ''; tries the
     months read this check besides S pot_urls; cached {month: rows} of the month whose read the Next month try takes
     the place of (its rows from the check before, so the try adds no page: one pot page a check; with no such rows,
@@ -15187,7 +15187,7 @@ def pot_prepare(fl):
         else:  # no rows of this month's from the check before (a start): its page now, the try (still due) next check
             tries.remove(nxt)
     elif pot_mode() == "Next month" and nxt in tries and this in tries:
-        # 1.8.1 review: both months are tries in one check (after a pause, a FLICA yield or a restart): the next
+        # 1.8.2 review: both months are tries in one check (after a pause, a FLICA yield or a restart): the next
         # month's page now, this month's try (still due) at the next check; Next month reads one pot page a check
         tries.remove(this)
     return "", tries, cached
@@ -15247,7 +15247,7 @@ def _num(v):
 
 
 def pot_state_clean():
-    """1.8.1: the state's pot keys of the wrong type (a hand edit, a later bug) are dropped, never a crash: pot_bcids,
+    """1.8.2: the state's pot keys of the wrong type (a hand edit, a later bug) are dropped, never a crash: pot_bcids,
     pot_months, pot_cands, baseline_bcid and swap_seen_month dicts, their entries dicts with a valid BCID (pot_bcids,
     pot_cands) or the fields of a month's record; 1.8.0's next-month link note is gone."""
     bre = re.compile(r"\d{3}\.\d{1,4}")
@@ -15350,9 +15350,9 @@ def check(fl):
     if full:
         check_now_marks()  # 1.8.2 (S3 d): Check now reads the future months too
     tries, cached = [], {}
-    POT_JUDGE.update(read=set(), live=set())  # 1.8.1 (POT-2): nothing is judged against a check before
+    POT_JUDGE.update(read=set(), live=set())  # 1.8.2 (POT-2): nothing is judged against a check before
     if S.get("pot_plan") or not S.get("pot_urls"):
-        # 1.8.1 (D1, D2): the pot pages of the bid months the Pot month select chooses, each from its own BCID (no
+        # 1.8.2 (D1, D2): the pot pages of the bid months the Pot month select chooses, each from its own BCID (no
         # FLICA load; a main menu look first when a month's BCID is refused or not open, at most every 6 h a month)
         stop, tries, cached = pot_prepare(fl)
         if stop:
@@ -15368,8 +15368,8 @@ def check(fl):
     pot_all = {}
     new_any = False
     was_regular = {k for v in (S.get("baseline") or {}).values() for k in v or ()}  # FW-0034: before this pass's reads
-    read_now = set(cached)  # 1.8.1: the months read (or, for the Next month try, cached) this check keep their baseline
-    first_read = set()  # 1.8.1 (D3): the months whose read this check set their baseline only (no alert, no push)
+    read_now = set(cached)  # 1.8.2: the months read (or, for the Next month try, cached) this check keep their baseline
+    first_read = set()  # 1.8.2 (D3): the months whose read this check set their baseline only (no alert, no push)
     pot_all.update(cached)  # the Next month try's check: this month's rows of the check before (no page, no alert)
     fetch = [(m, u) for m, u in S["pot_urls"].items() if m not in cached]
     fetch += [(m, mobile_pot_url(pot_pick(m)[0])) for m in tries if m not in S["pot_urls"]]
@@ -15394,13 +15394,13 @@ def check(fl):
             # is read this way: a hidden Schedule Lookup prints the same error on a live session (FW-0069).
             log.info("open time page %s: FLICA session lost (%s); logging in again", month, SESSION_LOST_TXT)
             return "needs_login"
-        if MONTH_KEY_RE.match(month):  # 1.8.1 (D1): a planned bid month's page counts only when it is that month's pot
+        if MONTH_KEY_RE.match(month):  # 1.8.2 (D1): a planned bid month's page counts only when it is that month's pot
             pot_link_scan(html, url, month)  # D1b: a BCID link on it (another month's pot), no load
             if pot_verdict(month, url, html) == "skip":
                 rec, last = pot_rec(month), POT_ROWS.get(month)
                 if (rec.get("status") == "ok" and rec.get("refusals") and last and month in S["baseline"]
                         and last["n"] >= POT_SEQ["n"] - POT_REFUSE_MAX):  # rows of this run of reads only
-                    # 1.8.1 review: a passing glitch on a month that read ok: its last good rows stand in this check
+                    # 1.8.2 review: a passing glitch on a month that read ok: its last good rows stand in this check
                     # (no alert, no baseline change), so its pairing details stay cached and its rows stay published
                     pot_all[month] = last["rows"]  # not in read_now: its swap ideas are kept, none pushed again
                     POT_ROWS[month] = {"rows": last["rows"], "n": POT_SEQ["n"]}
@@ -15446,7 +15446,7 @@ def check(fl):
         read_guard(pot_details, fl, pot, full, optional=True)
         base = S["baseline"].get(month)
         base_b = (S.get("baseline_bcid") or {}).get(month) if MONTH_KEY_RE.match(month) else None
-        if base is not None and base_b and base_b != bcid(url):  # 1.8.1: another BCID's page is a first read
+        if base is not None and base_b and base_b != bcid(url):  # 1.8.2: another BCID's page is a first read
             log.info("baseline %s was read from BCID %s; BCID %s is another page", month, base_b, bcid(url))
             base = None
         new_keys = set()
@@ -15465,7 +15465,7 @@ def check(fl):
                 run_rules(month, k, pot[k])
         if base is not None:
             pend = S.setdefault("pickup_pending", {})
-            for k in set(base) - set(pot):  # 1.8.1 (review R3, F1-R2): judged gone by this good read of its folder
+            for k in set(base) - set(pot):  # 1.8.2 (review R3, F1-R2): judged gone by this good read of its folder
                 pend.setdefault(k, {"tries": 0, "next": time.time() + PICKUP_FIRST_S})["from"] = month
         DB.record_pot(month, pot, new_keys)
         new_any = new_any or bool(new_keys)
@@ -15492,7 +15492,7 @@ def check(fl):
         return "stop"
     if ci_kind == "expired":
         return "needs_login"
-    # drop months no longer published, and cached details of pairings no longer in any pot (1.8.1: a month read this
+    # drop months no longer published, and cached details of pairings no longer in any pot (1.8.2: a month read this
     # check keeps its baseline too, a try that read as its month, the Next month try's cached month, and so does every
     # month the select concerns: a page refused or skipped this check alerts the trips that came meanwhile next time)
     keep = set(S["pot_urls"]) | read_now | (set(pot_months_of()) if S.get("pot_plan") else set())
@@ -15504,11 +15504,11 @@ def check(fl):
         pot_own_trigger(pot_all, read_now | {CLOSE_IN_KEY})
     except Exception as e:  # noqa: BLE001
         log.info("schedule pot trigger skipped: %s", e)
-    HEALTH["pot"] = pot_note() if S.get("pot_plan") else ""  # 1.8.1: a refused page, this month's pot not found
+    HEALTH["pot"] = pot_note() if S.get("pot_plan") else ""  # 1.8.2: a refused page, this month's pot not found
     HEALTH["smart"] = smart_month_note()  # 1.8.2 (S6): a bid month read with no month type in smart.json (no load)
     pot_attr_publish()
     live = {k for p in pot_all.values() for k in p}
-    live |= {k for m in keep if m not in read_now for k in S["baseline"].get(m) or ()}  # 1.8.1 review: a month the
+    live |= {k for m in keep if m not in read_now for k in S["baseline"].get(m) or ()}  # 1.8.2 review: a month the
     # select still concerns but not read this check (refused once, a try waiting) keeps its pairing details cached
     S["details"] = {k: v for k, v in S.get("details", {}).items() if k in live}
     S["relogin_streak"] = 0
@@ -15517,14 +15517,14 @@ def check(fl):
     flat.sort(key=lambda r: r.get("src") != "C")  # FW-0034: close-in trips (under 16 h to report) first
     publish_pot(flat)
     publish_near_misses(flat)  # 1.7.14: from the rows, schedule and own trips on hand (no FLICA load)
-    finds_period_close()  # 1.8.1 (POT-6): finds of a bid period that ended, in no pot any more (no load)
+    finds_period_close()  # 1.8.2 (POT-6): finds of a bid period that ended, in no pot any more (no load)
     read_guard(email_check, fl, pot_all)
     read_guard(pickup_check, fl, full, optional=True)
     publish_finds()  # rows carry live CA / details now, so publish every check
     read_guard(tradeboard_check, fl, full, optional=True)
     read_guard(requests_check, fl, optional=True)  # 1.2.0: swap / add / drop request decisions -> push
     read_guard(grid_check, fl, full, optional=True)
-    swap_scan(flat, read=read_now | {CLOSE_IN_KEY}, quiet=first_read)  # 1.8.1: a month not read keeps its ideas
+    swap_scan(flat, read=read_now | {CLOSE_IN_KEY}, quiet=first_read)  # 1.8.2: a month not read keeps its ideas
     drop_scan()
     if FLAGS.pop("swap_map", False) and has("auto_swap"):
         read_guard(swap_map_probe, fl)
@@ -16567,7 +16567,7 @@ def captures_cleanup():
 def main():
     global MQ
     migrate_swap_mode()  # FW-0028: before on_connect publishes the mode
-    pot_start()  # 1.8.1: the Pot month select and the learned pot BCIDs, before on_connect publishes the select
+    pot_start()  # 1.8.2: the Pot month select and the learned pot BCIDs, before on_connect publishes the select
     enforce_role()
     flica_key_start()  # 1.7.4: a pilot's refusal record keyed (or its key found lost) before any command reads it
     again = flica_again_due()  # 1.7.4 review: read (and cleared) at every start
@@ -16766,13 +16766,13 @@ def main():
                     continue
                 try_login(fl, f"backoff step {S.get('relogin_streak', 0)}")
                 continue
-            # 1.8.1: no 6 h rediscovery for the next bid month any more (it reloaded the main menu and the mobile pot):
+            # 1.8.2: no 6 h rediscovery for the next bid month any more (it reloaded the main menu and the mobile pot):
             # the Pot month select chooses the months, each check plans their pages (pot_prepare: no load), a month not
             # open is tried once a day and looked for on the main menu at most every 6 h
             if time.time() - S.get("pruned_at", 0) > 86400:
                 DB.prune()
                 S["pruned_at"] = time.time()
-            # month rollover: the pot pages are planned again for the new HST month (1.8.1: This month moves to it,
+            # month rollover: the pot pages are planned again for the new HST month (1.8.2: This month moves to it,
             # Next month to the one after once its pot is open; pot_prepare does it at every check anyway)
             mk = local_now().strftime("%Y-%m")
             if last_month_check and last_month_check != mk:

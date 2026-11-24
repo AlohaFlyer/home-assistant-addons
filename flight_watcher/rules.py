@@ -123,7 +123,7 @@ def _month_after(key):
 
 def matches(rule, row, today=None, month_of=None, this_month=None):
     """(True, '') or (False, reason). Every condition present must hold.
-    1.8.1 (POT-10): today is the caller's date (the Watcher's HST day, so the row's year too); month_of(date) gives a
+    1.8.2 (POT-10): today is the caller's date (the Watcher's HST day, so the row's year too); month_of(date) gives a
     day's bid month 'YYYY-MM' (the Watcher's bid_period_key: Dec 1, 2026 is November's) and this_month the bid month
     of today (the Watcher's this_month_key). 'current' is this_month, 'next' the month after it, and a trip counts in
     the bid month of its first day. Without them, the calendar month (as before)."""
@@ -178,7 +178,7 @@ def evaluate(rules, row, live, submits_today, now=None, today=None, month_of=Non
     """Match one new row against all rules.
 
     live: {rule_id: bool} from the per-rule HA switch. submits_today: {rule_id: int}.
-    1.8.1 (POT-10): today, month_of and this_month go to matches (the Watcher's HST date and bid months; today
+    1.8.2 (POT-10): today, month_of and this_month go to matches (the Watcher's HST date and bid months; today
     defaults to now's UTC date as before).
     Returns a list of match dicts (one per matching rule)."""
     now = now or datetime.now(timezone.utc)

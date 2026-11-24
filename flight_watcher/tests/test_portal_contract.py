@@ -72,7 +72,7 @@ def test_every_subscription_is_allowed_or_refused_and_none_is_both():
     assert set(roles.SUBS) == allowed | refused | later  # every MQTT command topic an instance takes is classified
     for s in later:
         assert roles.portal_sub(s) is None and s not in allowed, s
-        # 1.8.1: the Pot month select is a core command (every instance's, from Home Assistant) that no portal ever
+        # 1.8.2: the Pot month select is a core command (every instance's, from Home Assistant) that no portal ever
         # sends (its clock card shows the months read only): the only later sub of a feature a portal offers. 1.8.2:
         # the schedule card's refresh button too (hidden on the portal: no contract change)
         assert roles.FEATURES[roles.SUBS[s]][1] is False or s in ("pot_month/set", "schedule/refresh"), s

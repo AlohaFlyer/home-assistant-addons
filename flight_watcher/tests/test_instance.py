@@ -336,7 +336,7 @@ ADMIN_ONLY_178 = ("sensor.flight_watcher_pilotdb",)
 ADMIN_ONLY_1719 = ("sensor.flight_watcher_pay_model",)
 ADMIN_ONLY_1722 = ("sensor.flight_watcher_crewtrac_check",)  # 1.7.22 (Hark): the CrewTrac per-trip pay check
 ADMIN_IDS = sorted(ADMIN_IDS_1412 + ["sensor.flight_watcher_bid_calendar", "sensor.flight_watcher_near_misses",
-                                     "select.flight_watcher_pot_month"]  # 1.8.1: the Pot month select, every instance
+                                     "select.flight_watcher_pot_month"]  # 1.8.2: the Pot month select, every instance
                    + list(ADMIN_ONLY_171) + list(ADMIN_ONLY_172) + list(ADMIN_ONLY_178) + list(ADMIN_ONLY_1719) + list(ADMIN_ONLY_1722))
 PILOT_RETIRED_1500 = ("switch.flight_watcher_auto_swap_dry_run", "button.flight_watcher_map_swap_pages_read_only",
                       "sensor.flight_watcher_would_drop")

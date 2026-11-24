@@ -1,4 +1,4 @@
-"""1.8.1 (T3, S7): the first read of a new request folder. The Open Time Requests list of a bid folder (BCID) and the
+"""1.8.2 (T3, S7): the first read of a new request folder. The Open Time Requests list of a bid folder (BCID) and the
 Tradeboard My Requests page of a bid number each have their own first read, like the close-in folder's (FW-0034): on
 it only decisions filed in the last REQ_FIRST_H hours are pushed, the rest are history (marked seen, never pushed
 later). So the moment Ryan sets Pot month to Both, December's 003.153 and Tradeboard 001.153 do not send their whole
@@ -185,7 +185,7 @@ def test_a_first_read_cut_short_stays_a_first_read(mk, monkeypatch):
     assert _seen(W) == [("Approved", "003.152", ("H3922",))]
 
 
-# ---------------------------------------------------------------- 1.8.1 review: a first read is a page that is the list
+# ---------------------------------------------------------------- 1.8.2 review: a first read is a page that is the list
 UNAVAILABLE = "<html><body><h1>Service Temporarily Unavailable</h1></body></html>"
 REQ_ERROR = "<html><body>An error occurred while processing your request. Please try again later.</body></html>"
 
@@ -215,7 +215,7 @@ def _james_dec2(mk, monkeypatch):
 
 @pytest.mark.parametrize("setup", [_ryan_both, _james_dec2])
 def test_a_tradeboard_page_the_gate_does_not_know_is_not_a_first_read(mk, monkeypatch, setup):
-    """1.8.1 review (F2A-1, R1): Tradeboard 153's first load is FLICA's 'Service Temporarily Unavailable' page. The
+    """1.8.2 review (F2A-1, R1): Tradeboard 153's first load is FLICA's 'Service Temporarily Unavailable' page. The
     gate judges it not a Tradeboard page and stops the Tradeboard reads 30 min; it is not 153's first read either (no
     mark, no rows), so once the real page loads its trades filed days ago stay history and only the one filed an hour
     ago pushes; a trade decided after that pushes."""
@@ -239,7 +239,7 @@ def test_a_tradeboard_page_the_gate_does_not_know_is_not_a_first_read(mk, monkey
 
 
 def test_a_tradeboard_page_whose_trades_the_parser_cannot_read_is_not_a_first_read(mk, monkeypatch):
-    """1.8.1 review (R1): Tradeboard 153's first page is a My Requests page that names a trade the parser cannot read
+    """1.8.2 review (R1): Tradeboard 153's first page is a My Requests page that names a trade the parser cannot read
     (no rows: the page kept privately for parser checks). It is not 153's first read: when the next page reads, the
     trade filed a week ago stays history and the one filed an hour ago pushes."""
     W = _ryan_both(mk, monkeypatch)
@@ -257,7 +257,7 @@ def test_a_tradeboard_page_whose_trades_the_parser_cannot_read_is_not_a_first_re
 @pytest.mark.parametrize("first_page", [REQ_ERROR, req_page("")], ids=["error-page", "empty-list"])
 @pytest.mark.parametrize("setup", [_ryan_both, _james_dec2])
 def test_a_new_folders_first_read_is_a_list_with_rows_or_a_second_empty_read(mk, monkeypatch, setup, first_page):
-    """1.8.1 review (F2A-1): December's first load is FLICA's error page that says 'request' (taken for an empty
+    """1.8.2 review (F2A-1): December's first load is FLICA's error page that says 'request' (taken for an empty
     list), or its list shown empty for a moment. Neither is 003.153's first read: when the real list loads, its
     decisions filed days ago stay history and only the one filed 2 h ago pushes."""
     W = setup(mk, monkeypatch)
@@ -273,7 +273,7 @@ def test_a_new_folders_first_read_is_a_list_with_rows_or_a_second_empty_read(mk,
 
 @pytest.mark.parametrize("setup", [_ryan_both, _james_dec2])
 def test_a_new_folder_that_reads_empty_twice_in_a_row_has_had_its_first_read(mk, monkeypatch, setup):
-    """1.8.1 review (F2A-1): a December folder with no requests yet is marked on its second empty read in a row (not
+    """1.8.2 review (F2A-1): a December folder with no requests yet is marked on its second empty read in a row (not
     on the first), so a decision on it after that pushes, however long ago its request was filed. A folder read before
     (November's 003.152) is not new: one empty read never changes its mark."""
     W = setup(mk, monkeypatch)

@@ -467,7 +467,7 @@ class Store:
 
     # ---- finds
     def record_pot(self, month, pot, new_keys):
-        """Upsert every row seen; stamp gone_at on rows no longer in this month's pot. 1.8.1 (POT-8): a row in a bid
+        """Upsert every row seen; stamp gone_at on rows no longer in this month's pot. 1.8.2 (POT-8): a row in a bid
         month's pot ('YYYY-MM') is filed under that month (a find 1.8.0 or an email filed under another month's key)."""
         t = now_iso()
         own = 1 if re.fullmatch(r"\d{4}-\d{2}", str(month)) else 0  # the close-in folder keeps move_finds' rule
@@ -503,7 +503,7 @@ class Store:
             self.db.execute(f"UPDATE finds SET month=?, gone_at=NULL WHERE key IN ({q})", (month, *keys))
 
     def relabel_finds(self, old, new):
-        """1.8.1: the finds of a pot page key 1.8.0 used ('mobile', 'mobile_<bcid>', a month name) belong to the bid
+        """1.8.2: the finds of a pot page key 1.8.0 used ('mobile', 'mobile_<bcid>', a month name) belong to the bid
         month key ('YYYY-MM') the same page is read under now, so its next read stamps the gone ones."""
         if not old or not new or old == new:
             return
@@ -979,12 +979,12 @@ class Store:
         return [k for k, pk in rows if pk and not json.loads(pk).get("scored")]
 
     def open_finds(self):
-        """1.8.1 (POT-6): [(key, first_seen)] of every find not stamped gone."""
+        """1.8.2 (POT-6): [(key, first_seen)] of every find not stamped gone."""
         with self.lock:
             return self.db.execute("SELECT key, first_seen FROM finds WHERE gone_at IS NULL").fetchall()
 
     def close_finds(self, gone):
-        """1.8.1 (POT-6): {key: gone_at} stamped on finds still open (a find stamped meanwhile keeps its stamp)."""
+        """1.8.2 (POT-6): {key: gone_at} stamped on finds still open (a find stamped meanwhile keeps its stamp)."""
         with self.lock:
             self.db.execute("BEGIN")
             for k, at in gone.items():

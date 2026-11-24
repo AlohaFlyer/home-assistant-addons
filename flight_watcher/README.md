@@ -10,7 +10,7 @@ publishes what it finds to Home Assistant over MQTT.
 
 - Pot watch: reloads the open time pot at random gaps (normal 1 to 90 min, hunt 5 to 90 s with
   `switch.flight_watcher_hunt_mode`, each wait +-30 %; a pilot's 100 FLICA loads an hour spreads a short hunt over the
-  hour), for the bid month or months the **Pot month** select chooses (1.8.1: this month, the next one once its pot
+  hour), for the bid month or months the **Pot month** select chooses (1.8.2: this month, the next one once its pot
   is open, or both; each from its own BCID, below). A new pairing fires `flight_watcher/event/new_pairing` and lands
   on the finds card.
 - FLICA gate (1.6.2, `gate.py`): every Watcher in the container loads FLICA through one gate: 1.5 to 3.5 s between its
@@ -435,7 +435,7 @@ months FLICA's Schedule Lookup lists fresh:
 The Flight Watcher panel's **Open FLICA (live, stays signed in)** button (`/hassio/ingress/43b22650_flight_watcher/flica`)
 shows FLICA's mobile open time pot, pairing pages and own schedule through the Watcher's own FLICA session, with an
 auto refresh that runs only while the page is on screen. It never logs in by itself (FLICA allows one session), never
-loads a request, add, drop or swap page, and never answers a CAPTCHA. Details: CHANGELOG 1.8.0, `mirror.py`. 1.8.1: its
+loads a request, add, drop or swap page, and never answers a CAPTCHA. Details: CHANGELOG 1.8.0, `mirror.py`. 1.8.2: its
 Open time buttons follow the pot pages the Watcher reads (the Pot month select, above).
 
 ## Web UI and rules

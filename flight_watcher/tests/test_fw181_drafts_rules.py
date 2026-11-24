@@ -1,4 +1,4 @@
-"""1.8.1 audit (group f4): drafts, marked swap ideas, rule months and the close-in folder at the bid period's edge.
+"""1.8.2 audit (group f4): drafts, marked swap ideas, rule months and the close-in folder at the bid period's edge.
 Hawaiian's bid periods are not calendar months: November runs Nov 1 to Dec 1, December Dec 2 to 31 (the pairing files'
 bounds, _periods). With the Pot month select on Both (Ryan) the Watcher holds November's pot 003.152 and December's
 003.153 at once; a pilot instance on This month holds one.

@@ -42,20 +42,20 @@
 // today, and the thresholds. On a phone the stamp starts its own line and Next the one after it, and the stamp (and
 // Next) keep one width and the stamp one weight at every level, so the card and its buttons never move as time ticks. mode: age is a tile
 // (56 px, one grid row, "Data age" over its value, never wrapped), and a mode change on the same card builds it again.
-// 1.8.1 (Ryan, Nov 23: "I'm working on Dec now"): a Pot select beside the intervals (select.flight_watcher_pot_month:
+// 1.8.2 (Ryan, Nov 23: "I'm working on Dec now"): a Pot select beside the intervals (select.flight_watcher_pot_month:
 // This month, Next month, Both; the same look and 44 px phone target as the interval selects) and, beside it, the
 // month(s) each check reads with their BCIDs ("December 2026 (003.153)"), then a month of the select not read yet with
 // why ("January 2027 not open yet"), from the state's pot_months. In the pilot portal the select is no command (no
 // portal sub, roles.NOT_ON_PORTAL): the card shows the mode and the months as text, read only.
 const FW_PORTAL = false;
 const FC_POT = ["This month", "Next month", "Both"];  // the Watcher's POT_MODES
-// 1.8.1: the months of the state's pot_months: each read every check with its BCID, then the others with their status
+// 1.8.2: the months of the state's pot_months: each read every check with its BCID, then the others with their status
 function fcPotText(list) {
   const ok = (r) => r && typeof r.month === "string";
   const read = list.filter((r) => ok(r) && r.read).map((r) => `${r.name || r.month} (${r.bcid || "?"})`);
   const rest = list.filter((r) => ok(r) && !r.read)
     .map((r) => `${r.name || r.month} ${r.how === "not found yet" ? "not found yet"
-      : r.status && r.status !== "ok" ? r.status : "not read yet"}`);  // 1.8.1: a page not planned yet is not read
+      : r.status && r.status !== "ok" ? r.status : "not read yet"}`);  // 1.8.2: a page not planned yet is not read
   return [...read, ...rest].join(" \u00b7 ");
 }
 const FW_AGE_IDS = { last: "sensor.flight_watcher_last_check", state: "sensor.flight_watcher_state",
@@ -342,7 +342,7 @@ class FlightWatcherClockCard extends HTMLElement {
       $("rearm").addEventListener("click", () => { if (confirm(`${this._rearmSays || "Re-arm logs into FLICA once."}\n\nRe-arm the Watcher now?`)) this._h.callService("button", "press", { entity_id: "button.flight_watcher_re_arm" }); });
       $("hs").addEventListener("change", (e) => { const v = this._wish("number.flight_watcher_hunt_check_every", e.target.value); this._h.callService("number", "set_value", { entity_id: "number.flight_watcher_hunt_check_every", value: v }); });
       $("ns").addEventListener("change", (e) => { const v = this._wish("number.flight_watcher_normal_check_every", e.target.value); this._h.callService("number", "set_value", { entity_id: "number.flight_watcher_normal_check_every", value: v }); });
-      if (!FW_PORTAL) $("pm").addEventListener("change", (e) => {  // 1.8.1: never in the portal (no such command)
+      if (!FW_PORTAL) $("pm").addEventListener("change", (e) => {  // 1.8.2: never in the portal (no such command)
         const option = e.target.value;
         this._pmWant = { v: option, at: Date.now() };
         this._h.callService("select", "select_option", { entity_id: "select.flight_watcher_pot_month", option });
@@ -351,7 +351,7 @@ class FlightWatcherClockCard extends HTMLElement {
     }
     this._render();
   }
-  // 1.8.1 (D4): the Pot select (Home Assistant only) and the months each check reads (the state's pot_months). A pick
+  // 1.8.2 (D4): the Pot select (Home Assistant only) and the months each check reads (the state's pot_months). A pick
   // stays shown until the select's state shows it or FC_WANT_MS pass; in the portal the mode is text
   _pot($) {
     const ent = this._h.states["select.flight_watcher_pot_month"], sel = $("pm"), live = !FW_PORTAL && !!ent;

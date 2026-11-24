@@ -20,7 +20,7 @@ def _iso(ddmon, year):
 
 
 def year_near(ddmon, month, year):
-    """1.8.1: the year of a grid's first row (DDMON) in the bid month 'YYYY-MM', which may start a few days before the
+    """1.8.2: the year of a grid's first row (DDMON) in the bid month 'YYYY-MM', which may start a few days before the
     month (Dec 31 for January); year when no bid month is given. A January grid read in December is 2027, not 2026."""
     m = re.match(r"\d{2}([A-Z]{3})", str(ddmon).strip().upper())
     if not month or not m or m.group(1) not in MON or not re.match(r"^\d{4}-\d{2}$", str(month)):
@@ -31,7 +31,7 @@ def year_near(ddmon, month, year):
 
 def parse_grid_html(html, year, month=None):
     """{iso_date: {'net': int, 'color': 'green'|'red'|'black', 'avail': int, 'open': int}} from the
-    rendered page. Dates roll into the next year when the month goes backwards (Dec -> Jan). 1.8.1: month, the bid
+    rendered page. Dates roll into the next year when the month goes backwards (Dec -> Jan). 1.8.2: month, the bid
     month 'YYYY-MM' the grid is of, sets the first row's year (year_near)."""
     out, last_m = {}, 0
     for row in ROW_RE.findall(html):
@@ -87,7 +87,7 @@ def _int(v, default=0):
 def parse_grid_json(data, year, month=None):
     """{iso_date: {'net','color','avail','open'}} from reserveGridService JSON. Color comes from
     statusColor.net (FLICA's own green/red/black); a row without one counts as black. Dates roll
-    into the next year when the month goes backwards (Dec -> Jan). 1.8.1: month as in parse_grid_html."""
+    into the next year when the month goes backwards (Dec -> Jan). 1.8.2: month as in parse_grid_html."""
     rows = _find_rows(data)
     if not rows:
         return {}

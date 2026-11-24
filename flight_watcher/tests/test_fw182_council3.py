@@ -17,6 +17,7 @@ Each test drives the real code (check(), _schedule_read, the pot plan) on a fake
 pairings H39xx, "Doe, Jane" 10001, "Doe, John" 10002. FLICA is never reached."""
 import json
 import logging
+import types
 
 import pytest
 
@@ -137,7 +138,8 @@ def test_r2_a_read_across_dec_2_00_00_keeps_its_month_and_the_next_one_rolls_ove
     it: November is stored and diffed as the current month (its change is an event with its moves), the spare load is
     another month's (never December's page taken for the current one), the read status is ok. The pot's month flips
     at 00:00. The next read takes December as the current month (its first load), and November, read at 23:59:59, is a
-    past month now: fresh 24 h (no load of it until then), then read once."""
+    past month now: fresh 24 h (no load of it until then), then read once. On the mobile path November's copy is the
+    mobile page's, so it gets one Schedule Lookup read at the next spare load first (C3-1: its move path baseline)."""
     W, F, st = _edge(mk, monkeypatch, at(2026, 12, 1, 23, 0), mobile)
     for _ in range(2):  # 23:00 and 23:30: November current, December and October read as other months
         assert _tick(W, F, step=30 * MIN)
@@ -176,8 +178,13 @@ def test_r2_a_read_across_dec_2_00_00_keeps_its_month_and_the_next_one_rolls_ove
         assert not r or r[0][1] == ("mobile" if mobile else "1226"), r  # December first on every read
         every += r
     nov = [t for t, bd in every if bd == "1126"]  # from 00:00 November's own read (the totals are December's)
-    assert len(nov) == 1 and nov_read + 24 * 3600 <= nov[0] <= nov_read + 24 * 3600 + 40 * MIN, (
-        [round((t - nov_read) / 60) for t in nov])
+    if mobile:  # C3-1: November's copy is the mobile page's, so one Schedule Lookup read soon after 00:00 is its
+        # baseline for the move path (a change on its page alone is pushed), then its daily read 24 h after that
+        assert len(nov) == 2 and nov[0] <= nov_read + 90 * MIN, [round((t - nov_read) / 60) for t in nov]
+        assert nov[0] + 24 * 3600 <= nov[1] <= nov[0] + 24 * 3600 + 40 * MIN, [round((t - nov_read) / 60) for t in nov]
+    else:
+        assert len(nov) == 1 and nov_read + 24 * 3600 <= nov[0] <= nov_read + 24 * 3600 + 40 * MIN, (
+            [round((t - nov_read) / 60) for t in nov])
     assert len(_changed(W)) == 1  # nothing else changed: November's daily read is no change
 
 
@@ -197,6 +204,30 @@ def test_r2_a_refresh_press_whose_read_fails_after_00_00_is_answered_for_its_mon
     rf = W.S["sched_refresh"]
     assert (rf["month"], rf["state"]) == ("2026-11", "failed") and rf["why"], rf
     assert W.MQ.last(f"{W.T}/schedule")["refresh"]["state"] == "failed"
+
+
+def test_r2_a_read_whose_first_page_fails_before_00_00_takes_novembers_page_after_it(mk, monkeypatch):
+    """C3-3 (council loop 3 review): Ryan's mobile path. The read due at Dec 1 23:59:59 tries the mobile page of bid
+    period 152 first and it fails before 00:00; its second try, Schedule Lookup bd=1126, loads after 00:00. That page is
+    November's, the month the read started with, so it is accepted (read ok, November stored from Lookup), never
+    refused because the clock's month is December by then."""
+    W, F, st = _edge(mk, monkeypatch, at(2026, 12, 1, 23, 0), True)
+    _tick(W, F, step=30 * MIN)
+    W.CLOCK.t = MIDNIGHT - 1
+    W.S["sched_checked_at"] = W.CLOCK.t - 30 * MIN  # due now, by the 30 min gap
+    good = F.fl.ctx.request.get
+
+    def get(url, timeout=None):
+        if "mobileschedule" in url and "BCID=001.152" in url:
+            F.fl.loads.append((W.CLOCK.t, url))
+            return types.SimpleNamespace(text=lambda: INVALID)
+        return good(url, timeout)
+    F.fl.ctx.request.get = get
+    got = _tick(W, F, step=0)
+    assert _bds(got)[:2] == ["mobile", "1126"] and got[0][0] < MIDNIGHT <= got[1][0], got
+    assert W.S["sched_status"]["ok"], W.S["sched_status"]
+    nov = W.S["schedule"]["2026-11"]
+    assert (nov["month"], nov["src"]) == ("2026-11", "lookup") and nov["read_ts"] >= MIDNIGHT, nov.get("read_ts")
 
 
 # ---------------------------------------------------------------- R3: November's daily re-read after Dec 2
@@ -224,6 +255,9 @@ def test_r3_novembers_daily_reread_after_dec_2_is_quiet_or_one_change(mk, monkey
     assert "1126" in _bds(before) and "1226" in _bds(before)
     after = _until(W, F, at(2026, 12, 3, 3, 0))
     nov = [t for t, bd in after if bd == "1126"]
+    if mobile:  # C3-1: first one Schedule Lookup read soon after 00:00 (the mobile copy is no move baseline), quiet
+        assert len(nov) == 2 and nov[0] <= MIDNIGHT + 90 * MIN, [W.local_now()] + nov
+        nov = nov[1:]
     assert len(nov) == 1 and nov[0] >= at(2026, 12, 2, 23, 0), [W.local_now()] + nov  # its daily read, once
     assert ("H3907", "2026-11-30") in _items(W, "2026-11") and ("H3907", "2026-11-30") in _items(W, "2026-12")
     assert _quiet(W), (_changed(W), W.S.get("sched_moves"), _ev(W, "request_decided"))
@@ -251,6 +285,26 @@ def test_r3_novembers_daily_reread_after_dec_2_is_quiet_or_one_change(mk, monkey
     assert _changed(W)[1:] == [("2026-11", ["H3901 2026-11-05"], ["H3902 2026-11-06"])]
     assert [e["detail"] for e in _ev(W, "request_decided")][1:] == [
         "gave H3901 05NOV; took H3902 06NOV (seen on the FLICA schedule; no request on file)"]
+
+
+@pytest.mark.parametrize("mobile", [False, True])
+def test_r3_novembers_page_alone_changing_in_the_first_day_after_dec_2_is_pushed(mk, monkeypatch, mobile):
+    """C3-1 (council loop 3 review): Dec 2 06:00 November's page alone changes (H3901 Nov 5 moved to Nov 6), before
+    its daily read. One schedule_changed and one push, on both paths: on Ryan's mobile path November's copy from Dec 1
+    is the mobile page's, and moves are recorded only between two reads of the same page, so November's Schedule
+    Lookup read soon after 00:00 is the baseline that read is compared with."""
+    W, F, st = _edge(mk, monkeypatch, at(2026, 12, 1, 20, 0), mobile, OWN)
+    _until(W, F, at(2026, 12, 2, 6, 0))
+    assert _quiet(W), (_changed(W), W.S.get("sched_moves"), _ev(W, "request_decided"))
+    W.S["own_trips"]["H3902|2026-11-06"] = _rec("13:00", "11:00")
+    st.update(nov={"2026-11-06": ("H3902", "LAX", 2), "2026-11-30": st["nov"]["2026-11-30"]},
+              up="Dec 2, 2026 05:50:00")
+    _until(W, F, at(2026, 12, 3, 6, 0))
+    assert _changed(W) == [("2026-11", ["H3901 2026-11-05"], ["H3902 2026-11-06"])]
+    assert [e["detail"] for e in _ev(W, "request_decided")] == [
+        "gave H3901 05NOV; took H3902 06NOV (seen on the FLICA schedule; no request on file)"]
+    assert sorted((m["side"], m["trip"], m["state"]) for m in W.S["sched_moves"]) == [
+        ("add", "H3902", "pushed"), ("drop", "H3901", "pushed")]
 
 
 # ---------------------------------------------------------------- R4: the stamp moves, nothing changed
@@ -336,6 +390,9 @@ def test_r5_a_carry_in_trip_counts_once_in_the_far_column_and_the_working_flight
     W.publish_working_flight(now=now, force=True)
     wf = W.MQ.last(f"{W.T}/working_flight")
     assert (wf["attributes"]["pairing"], wf["attributes"]["leg"], wf["attributes"]["date"]) == (trip, "2 of 2", end)
+    # C3-2: its duty counts once in the 60 h FDP in 168 h (FAR 117.23(c)(1)); twice would read used 33:15, room 26:45
+    cum = wf["attributes"]["timeout"]["cum"]["fdp_168"]
+    assert (cum["used"], cum["room"]) == ("21:15", "38:45"), cum
 
 
 @pytest.mark.parametrize("mobile", [False, True])

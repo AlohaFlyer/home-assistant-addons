@@ -138,7 +138,7 @@ def test_error_page_and_empty_read_never_repush_or_zero_the_sensor(tmp_path, mon
 
 
 def test_new_folder_after_first_read_pushes_its_decisions(tmp_path, monkeypatch):
-    """1.8.1 (T3, S7): a folder that joins later has its own first read (its older decisions are history); a decision
+    """1.8.2 (T3, S7): a folder that joins later has its own first read (its older decisions are history); a decision
     made on it after that first read pushes, however long ago it was filed."""
     W, pages, fetched, read, events, sensor = _flow(tmp_path, monkeypatch)
     pages["text"] = _page("")
