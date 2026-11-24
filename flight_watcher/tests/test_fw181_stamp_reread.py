@@ -189,19 +189,19 @@ def test_mobile_path_gives_the_last_load_to_the_stamp_moved_month(W):
     got = _read(W, fl)
     assert len(got) == 2 and "bd=1226" in got[1]
     assert ("H3613", "2026-12-06") in _starts(W, "2026-12") and W.S["schedule"]["2026-11"]["totals"] == nov_tot
-    # 1.8.2 (merge): the stamp moves and November's own trips moved too: totals_first decides the spare load (1.8.1's
-    # 'moved' rule is gone): December, marked by the stamp, goes first while November's figures are under 2 h old, and
-    # November's Block / Credit are loaded at the next read
+    # the stamp moves and November's own trips moved: its Block / Credit are read on this read (main's rule, kept in
+    # the merge); December's stamp mark waits, unforced, and takes the next read's spare load
     fl.pages["mobileschedule"] = mob.replace(m_stamp, S2)
     fl.pages["bd=1126"] = _lookup("1126", ("1126", "1226"), NOV, S2, block="99.59", credit="111.11")
     W.S["schedule"]["2026-11"]["items"] = W.S["schedule"]["2026-11"]["items"][1:]
     W.LOOKUP_PAGE.update(bd="", html="", at=0)
     got = _read(W, fl)
+    assert len(got) == 2 and "bd=1126" in got[1] and W.S["schedule"]["2026-11"]["totals"]["credit"] == "111:11"
+    assert W.S["schedule"]["2026-12"]["cur_stamp"] != S2
+    assert W.later_months_stale("2026-11") == ["2026-12"]  # still owed: the next read with a load left takes it
+    got = _read(W, fl)
     assert len(got) == 2 and "bd=1226" in got[1]
     assert W.S["schedule"]["2026-12"]["cur_stamp"] == S2 and W.later_months_stale("2026-11") == []
-    assert W.S["schedule"]["2026-11"]["totals"]["credit"] == nov_tot["credit"]  # the stored figures, one read
-    got = _read(W, fl)
-    assert len(got) == 2 and "bd=1126" in got[1] and W.S["schedule"]["2026-11"]["totals"]["credit"] == "111:11"
 
 
 # ------------------------------------------------------------------ 1.8.1 review fixes
@@ -272,15 +272,12 @@ def test_a_stale_month_whose_load_fails_waits_its_back_off(W):
 
 
 @pytest.mark.parametrize("oct_late", [False, True])
-def test_mobile_path_this_months_own_change_gets_its_totals_after_the_marked_and_late_months(W, oct_late):
-    """The 1.8.1 review's case in the merged design: December is stale by the stamp and November's own trips moved
-    (FLICA's stamp is the whole schedule's, so his own change always marks December too). 1.8.2's totals_first
-    decides the spare load (1.8.1's 'moved' rule is gone): December, marked by the stamp, goes first while November's
-    figures are under 2 h old, so November keeps its stored Block / Credit one read. With no other month due they
-    are loaded at the next read; with October due and late (oct_late, the 1.8.1 review's 'past its own cadence') it
-    goes first too, and they are loaded at the third read, still under 2 h old (totals_first)."""
+def test_mobile_path_this_months_own_change_reads_its_totals_at_once_then_the_stamp_month(W, oct_late):
+    """The 1.8.1 review's case (main's rule kept in the merge): December is stale by the stamp and November's own
+    trips moved. FLICA's stamp is the whole schedule's, so his own change marks December too, but the change that
+    explains the stamp is November's own: November's Block / Credit are loaded on this read (his credit line is right
+    at once), and December's stamp mark waits, unforced, for the next read's spare load, before a late October."""
     fl = _three_on_file(W, mobile=True)
-    nov_credit = W.S["schedule"]["2026-11"]["totals"]["credit"]
     if oct_late:
         W.S["schedule"]["2026-10"]["read_ts"] -= 24 * 3600 + 31 * 60
     fl.pages["mobileschedule"] = fl.pages["mobileschedule"].replace(S0, S1)
@@ -288,13 +285,14 @@ def test_mobile_path_this_months_own_change_gets_its_totals_after_the_marked_and
     W.S["schedule"]["2026-11"]["items"] = W.S["schedule"]["2026-11"]["items"][1:]  # November's own trips moved
     W.LOOKUP_PAGE.update(bd="", html="", at=0)
     got = _read(W, fl)
-    assert len(got) == 2 and "bd=1226" in got[1] and W.S["schedule"]["2026-11"]["totals"]["credit"] == nov_credit
+    assert len(got) == 2 and "bd=1126" in got[1] and W.S["schedule"]["2026-11"]["totals"]["credit"] == "111:11"
+    assert W.sched_stale()["2026-12"]["why"] == W.SCHED_STAMP_WHY and W.sched_stale()["2026-12"]["forced"] is True
+    got = _read(W, fl)
+    assert len(got) == 2 and "bd=1226" in got[1] and "2026-12" not in W.sched_stale()
     assert W.later_months_stale("2026-11") == []
     if oct_late:
         got = _read(W, fl)
-        assert len(got) == 2 and "bd=1026" in got[1] and W.S["schedule"]["2026-11"]["totals"]["credit"] == nov_credit
-    got = _read(W, fl)
-    assert len(got) == 2 and "bd=1126" in got[1] and W.S["schedule"]["2026-11"]["totals"]["credit"] == "111:11"
+        assert len(got) == 2 and "bd=1026" in got[1]
 
 
 def test_a_stale_only_pass_that_raises_leaves_the_clock_and_the_fallback_alone(W):

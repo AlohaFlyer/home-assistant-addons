@@ -7882,6 +7882,11 @@ def other_months_pending(cur_month):
     return bool(next_other_month(cur_month)[0])
 
 
+def _trip_sig(m):
+    """1.8.2: a month copy's trips as (trip, start, end, layover), the change that moves its Block / Credit."""
+    return [(i.get("trip"), i.get("start"), i.get("end"), i.get("lay")) for i in (m or {}).get("items") or []]
+
+
 def _schedule_read(fl, force):
     if force:
         SCHED_FORCED["used"] = True
@@ -7917,7 +7922,11 @@ def _schedule_read(fl, force):
             press = isinstance(cur_mark, dict) and s["month"] == cur_month
             if press and (SCHED_READ.get("left") is None or SCHED_READ["left"] > 0):
                 defer_mark(next_other_month(s["month"])[0])
-            if old_tot and not press and not totals_first(s["month"]):
+            # 1.8.2 (merge of 1.8.1's rule, main's 'moved'): this month's own trips or days moved, so its Block /
+            # Credit moved too and are loaded on this read (his credit line is right at once); a later month the
+            # stamp marked waits, unforced, for the next read's spare load
+            own_moved = bool(old) and (old.get("days") != s.get("days") or _trip_sig(old) != _trip_sig(s))
+            if old_tot and not press and not own_moved and not totals_first(s["month"]):
                 merge_lookup_totals(None, s, old)  # 1.6.2 review: the stored figures; this read's load is a month's
             else:
                 merge_lookup_totals(fl, s, old)  # FW-0019: the mobile page has no Block / Credit; Schedule Lookup does
