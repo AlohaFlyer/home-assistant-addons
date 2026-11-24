@@ -171,8 +171,11 @@ def test_the_read_order_future_first_then_past_and_a_failing_month_last(mk):
     # the schedule keeps three months: with January listed the closed October is no longer read at all
     assert W.other_months_order(bds, "2026-11") == ["2026-12", "2027-01"]
     assert W.other_months_order(LISTED, "2026-11") == ["2026-12", "2026-10"]
-    W.S["sched_other_fail"] = {"2026-12": {"n": 1, "next": 0}}
+    W.S["sched_other_fail"] = {"2026-12": {"n": 1, "next": W.CLOCK.t}}  # 1.8.2: its back-off just ended
     assert W.other_months_order(LISTED, "2026-11") == ["2026-10", "2026-12"]  # a failing month never holds one back
+    W.CLOCK.t += 30 * MIN  # it waited a read past its back-off: ordered like the others again (tried once a step)
+    assert W.other_months_order(LISTED, "2026-11") == ["2026-12", "2026-10"]
+    W.CLOCK.t -= 30 * MIN
     W.S["sched_stale"] = {"2026-12": {"why": "test", "at": W.CLOCK.t, "forced": False}}
     assert W.other_months_order(LISTED, "2026-11") == ["2026-12", "2026-10"]  # a month marked stale goes first
 
@@ -326,17 +329,22 @@ def test_trigger_d_check_now_reads_the_future_month_too(mk, caplog):
     W, F = _w(mk, mobile=True)
     got = [bd for _ in range(4) for _, bd in _tick(W, F, step=30 * MIN)]
     assert got == ["mobile", "1126", "mobile", "1226", "mobile", "1026", "mobile", "1226"], got
-    W.S["sched_totals"]["at"] = W.CLOCK.t - 90 * MIN  # even with the totals due (under 2 h)
+    W.S["sched_totals"]["at"] = W.CLOCK.t - 90 * MIN  # the totals due (under 2 h)
     with caplog.at_level(logging.INFO, logger="flight_watcher"):
         got = _tick(W, F, full=True, step=4 * MIN)
-    assert [bd for _, bd in got] == ["mobile", "1226"], got  # a marked month takes the spare load first
+    # 1.8.2 review 2 (check-now-mobile-totals-still-stale): Check now reads the totals first (5 min old or more, as
+    # 1.8.1 did on every read); the month it marked goes first at the next read
+    assert [bd for _, bd in got] == ["mobile", "1126"], got
     assert _lines(caplog, "schedule 2026-12: read early") == ["schedule 2026-12: read early (Check now)"]
     with caplog.at_level(logging.INFO, logger="flight_watcher"):
-        got = _tick(W, F, full=True)  # Check now again 4 min later: no second mark (5 min rule), the totals load
-    assert len(_lines(caplog, "schedule 2026-12: read early")) == 1 and [bd for _, bd in got] == ["mobile", "1126"]
+        got = _tick(W, F, full=True)  # Check now again 4 min later: no second mark (5 min rule), the totals fresh
+    assert len(_lines(caplog, "schedule 2026-12: read early")) == 1 and [bd for _, bd in got] == ["mobile", "1226"]
     with caplog.at_level(logging.INFO, logger="flight_watcher"):
-        got = _tick(W, F, full=True)  # 6 min after that one: December again
-    assert len(_lines(caplog, "schedule 2026-12: read early")) == 2 and [bd for _, bd in got] == ["mobile", "1226"]
+        got = _tick(W, F, full=True)  # 6 min after that one: December marked again, the totals (10 min) first
+    assert len(_lines(caplog, "schedule 2026-12: read early")) == 2 and [bd for _, bd in got] == ["mobile", "1126"]
+    assert _tick(W, F) == []  # no second schedule read for Check now (2 loads, as before)
+    W.CLOCK.t = W.S["sched_checked_at"] + 30 * MIN
+    assert [bd for _, bd in _tick(W, F)] == ["mobile", "1226"] and not W.S.get("sched_stale")  # the next due read
 
 
 def test_a_trigger_waits_5_min_for_the_same_month_and_marks_only_listed_months(mk):
