@@ -734,14 +734,16 @@ SCHED_UPDATED = re.compile(r"Schedule Updated:\s*([A-Za-z]{3}\s+\d{1,2},\s*\d{4}
 def parse_schedule(html, domicile="HNL"):
     """Ryan's month schedule from the mobile schedule page. Returns None unless it looks like one.
     {'month': 'YYYY-MM', 'updated': 'Nov 1, 2026 09:54:34', 'days': [[iso, act, lay]],
-     'items': [{'trip','start','end','lay'}], 'totals': {...}}. act is '' on an empty day."""
+     'items': [{'trip','start','end','lay'}], 'totals': {...}}. act is '' on an empty day. 1.8.2 (P5): month is the
+    header's; the rows can start in the month before (December's carry-in rows Nov 30 and Dec 1, as on its Schedule
+    Lookup page) and run past the month's end."""
     soup = BeautifulSoup(html, "html.parser")
     text = soup.get_text(" ", strip=True)
     m = SCHED_MONTH.search(text)
     if not m:
         return None
     mon, yr = MON3.index(m.group(1)[:3].upper()) + 1, int(m.group(2))
-    page_month = f"{yr}-{mon:02d}"  # 1.8.2 (LIVE-10, P5): the page's own month is its header's
+    hdr = f"{yr}-{mon:02d}"
     days, prev_dd = [], 0
     for tr in soup.find_all("tr"):
         cells = [c.get_text(" ", strip=True) for c in tr.find_all(["td", "th"], recursive=False)]
@@ -749,8 +751,10 @@ def parse_schedule(html, domicile="HNL"):
         if i is None or i + 2 >= len(cells) or not re.fullmatch(r"\d{1,2}", cells[i + 1]):
             continue
         dd = int(cells[i + 1])
-        if not prev_dd and dd > 20:  # 1.8.2 (LIVE-10, P5): a first row past the 20th is a day of a trip carried in
-            mon, yr = (12, yr - 1) if mon == 1 else (mon - 1, yr)  # from the month before (Nov 30 on December's page)
+        if not prev_dd and dd > 20:
+            # 1.8.2 (P5): a first row above the 20th is the month before (inflt.parse_cm_month's anchor): it was dated
+            # in the header's month, so Nov 30 read as Dec 30 and the whole line moved a month
+            mon, yr = (12, yr - 1) if mon == 1 else (mon - 1, yr)
         elif dd < prev_dd:  # rolled into the next month (trip ending after month end)
             mon, yr = (1, yr + 1) if mon == 12 else (mon + 1, yr)
         prev_dd = dd
@@ -772,15 +776,14 @@ def parse_schedule(html, domicile="HNL"):
         if t:
             tot[key] = int(t.group(1)) if key == "days_off" else t.group(1)
     if "days_off" not in tot:  # the OT drop view has no totals; FLICA counts VAC days as off
-        y0, m0 = page_month[:4], page_month[5:7]
         work = set()
         for it in items:
             if PAIRING_RE.match(it["trip"]):
                 for d in _span(date.fromisoformat(it["start"]), date.fromisoformat(it["end"])):
                     work.add(d.isoformat())
-        tot["days_off"] = sum(1 for d in days if d[0][:7] == f"{y0}-{m0}" and d[0] not in work)
+        tot["days_off"] = sum(1 for d in days if d[0][:7] == hdr and d[0] not in work)  # 1.8.2 (P5): not a carry-in
     u = SCHED_UPDATED.search(text)
-    return {"month": page_month, "updated": u.group(1) if u else "",
+    return {"month": hdr, "updated": u.group(1) if u else "",
             "days": days, "items": items, "totals": tot}
 
 
