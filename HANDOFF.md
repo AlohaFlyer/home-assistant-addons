@@ -1,4 +1,26 @@
-# HANDOFF: Flight Watcher (refreshed 2026-11-18: 1.7.18 live with HOM 1.9.2; every Pako edit applied)
+# HANDOFF: Flight Watcher (refreshed 2026-11-24: 1.8.2 in PR #146; 1.8.1 live; the Nov 18 state below)
+
+**Nov 24: 1.8.2 is ready in PR #146 (branch `claude/quirky-thompson-p94wms`), on top of main's 1.8.1 (#147, the
+stamp re-read, live on Pako).** CHANGELOG 1.8.2 has every part. (A) the open time pot, the Reserve Grid and the
+requests follow the bid month (Pot month select: This month, Next month, Both); (B) the schedule's other months are
+kept fresh (30 min for a future month, 24 h for a closed one), read early on his own signals (seat, pot, CrewTrac,
+Check now, the stamp), a refresh button on the schedule card (admin only), the bid month everywhere (November runs
+Nov 1 to Dec 1, PWA Section 2 Definitions 47), December's award carry-in, and the council loop 3 edge tests (Dec 1 to
+Dec 2 00:00 HST). No portal contract change; no new FLICA page type.
+- To install (each a [DESTRUCTIVE] yes from Ryan): merge #146, then Home Assistant > the app store reload and update
+  the app. Then set Ryan's `select.flight_watcher_pot_month` to Both (James's stays on This month), and verify the
+  version 1.8.2, the card files against git, pots 003.152 and 003.153 read, December's card like November's (Res
+  Grid, Open, Improved-Pay-Gross), award 12.001 re-read (carry-in Nov 30, H3665 Dec 3) and no false HIDDEN push.
+- Pako edits, not in git (backups next to each file): `custom_templates/flight_watcher.jinja` `pot_table` takes each
+  pot row's own month and `month_key()` counts from the bid month of today (`.flight_watcher.jinja.bak-20261123` and
+  `-20261124`); automation "Flight Watcher dashboard month reset" (id 1793493329647) runs at 00:01 on a listed bid
+  period's first day, or on the 1st when no listed period covers it (`/config/.automations.yaml.bak-20261124-fwreset`);
+  `/share/flight_watcher/smart.json` has "2026-12": "line" (`smart.json.bak-20261124`). The template and automation
+  edits take effect at the next `homeassistant.reload_custom_templates` / `automation.reload` (Home Assistant's REST
+  API timed out on Nov 23 22:00 to 22:10 HST, so both reloads are still to be confirmed).
+- For Ryan to confirm: the fit tag's days off minimum follows PWA 10.G.1.a (13 in a 31-day period) while smart.json
+  `min_days_off` is 12; the next period's close-in folder is not read on the edge day (one more FLICA load a check,
+  a budget yes).
 
 State (Nov 18): app **1.7.18** live on Pako HI, installed by Home Assistant's own update (Supervisor log: updates at
 04:02:41 and 04:06:56 HST; no connector or app API call made them, the app's auto-update is off; Ryan's "Ship it all"
