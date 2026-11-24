@@ -784,15 +784,37 @@ function fwCtLine(cc, fc, cb, fb) {
   if (cb != null && fb != null && fb !== cb) bad.push(`block CrewTrac ${fwCtHm(cb)}, FW ${fwCtHm(fb)} (${fwCtD(fb - cb)})`);
   return `CrewTrac ${fwCtHm(cc)}, FW ${fc != null ? fwCtHm(fc) : "?"}` + (bad.length ? ` \u2717 ${bad.join("; ")} (CrewTrac controls)` : " \u2713");
 }
+// 1.8.2 (LIVE-8): the Watcher puts FW's copy time of a trip ('PID|start') or month credit ('YYYY-MM') in the snapshot's
+// fw_at when it is newer than the pull (crewtrac.newer); a difference then reads 'CrewTrac not updated yet (pulled
+// HH:MM HST)', ok null (no cross, not one of the trips off). crewtrac.py: newer, pulled_hst, wait_line, _wait_what.
+function fwCtAt(snap, k) {
+  const a = Date.parse(String(((snap && snap.fw_at) || {})[k] || ""));
+  const b = Date.parse(String((snap && snap.pulled_at) || ""));
+  return Number.isFinite(a) && Number.isFinite(b) && a > b;
+}
+function fwCtWait(snap, what) {
+  const t = Date.parse(String((snap && snap.pulled_at) || ""));
+  const hhmm = Number.isFinite(t) ? new Date(t - 36e6).toISOString().slice(11, 16) : "?";  // HST, UTC-10
+  return `CrewTrac not updated yet (pulled ${hhmm} HST): ${what}`;
+}
+function fwCtWaitWhat(ct, pid, start, cc, fc, cb, fb) {
+  if (!ct) return `no ${pid} on ${start} in CrewTrac`;
+  if (cc == null) return "no credit for this trip in the snapshot";
+  const blk = cb != null && fb != null && fb !== cb ? `, block CrewTrac ${fwCtHm(cb)}, FW ${fwCtHm(fb)}` : "";
+  return `CrewTrac ${fwCtHm(cc)}, FW ${fc != null ? fwCtHm(fc) : "?"}${blk}`;
+}
 // one trip: {st, ok, line, ct (the snapshot trip)}; ok null when not compared
 function fwCtTrip(snap, pid, start, fwCr, fwBlk, nowMs) {
   const s = fwCtStatus(snap, nowMs);
   if (s.st !== "ok") return { st: s.st, ok: null, line: fwCtNot(s.st, s.age), ct: null };
   if (!Object.prototype.hasOwnProperty.call(snap.months || {}, String(start).slice(0, 7))) return { st: "out", ok: null, line: "CrewTrac not compared (month not in the snapshot)", ct: null };
-  const ct = fwCtFind(snap, pid, start);
+  const ct = fwCtFind(snap, pid, start), wait = fwCtAt(snap, `${pid}|${start}`);
+  if (!ct && wait) return { st: "ok", ok: null, line: fwCtWait(snap, fwCtWaitWhat(null, pid, start)), ct: null };
   if (!ct) return { st: "ok", ok: false, line: `CrewTrac has no ${pid} on ${start} \u2717 (CrewTrac controls)`, ct: null };
   const cc = fwCtM(ct.credit), fc = fwCtM(fwCr), cb = fwCtM(ct.block), fb = fwCtM(fwBlk);
   const ok = cc != null && (fc == null || fc === cc) && (cb == null || fb == null || fb === cb);
+  if (!ok && wait) return { st: "ok", ok: null, line: fwCtWait(snap, fwCtWaitWhat(ct, pid, start, cc, fc, cb, fb)),
+    ct };
   return { st: "ok", ok, line: fwCtLine(cc, fc, cb, fb), ct };
 }
 function fwCtMonth(snap, month, fwCr, nowMs) {
@@ -801,6 +823,10 @@ function fwCtMonth(snap, month, fwCr, nowMs) {
   const pr = ((((snap.months || {})[month]) || {}).pay_report) || {}, cc = fwCtM((pr.totals || {}).credit), fc = fwCtM(fwCr);
   if (cc == null) return { ok: null, line: "" };
   const ok = fc === cc;
+  if (!ok && fc != null && fwCtAt(snap, month)) {
+    const what = `Pay Report ${fwCtHm(cc)} credit (as of ${pr.as_of || "?"}), FW ${fwCtHm(fc)}`;
+    return { ok: null, line: fwCtWait(snap, what) };
+  }
   return { ok, line: `CrewTrac Pay Report ${fwCtHm(cc)} credit (as of ${pr.as_of || "?"}), FW ${fc != null ? fwCtHm(fc) : "?"}` + (ok ? " \u2713" : fc != null ? ` \u2717 off by ${fwCtD(fc - cc)} (CrewTrac controls)` : "") };
 }
 
@@ -2579,7 +2605,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
       })();
       const cutT = sum.cut > 0.01 ? ` <span class="k" title="${this._esc(`FW counts ${hm(sum.cut)} less than FLICA: a delayed leg FLICA counted twice (PWA 2.A.15.a.1, 4.B.1). ${sum.cutT.join("; ")}. Tap the trip's Pay-Gross for the breakdown.`)}">PWA -${hm(sum.cut)}</span>` : "";
       const tot = tgrp("thrs", [["Credit", hm(crAll) + cutT + (sum.ppEst ? ` <span class="k" title="${this._esc(`Not checked: the PAYP estimate is ${srcFl}'s month credit less everything else counted, so Credit matches it by construction.`)}">est</span>` : chk(crAll, fCr))], ["CrewTrac", !admin ? "" : (() => { const c = fwCtMonth(ctSnap, key, hm(crAll), Date.now()); const bad = c.ok === false || sum.ctBad.length > 0;
-          return c.line || sum.ctBad.length ? `<span class="${bad ? "bad" : "okc"}" title="${this._esc([c.line, sum.ctBad.length ? `Trips off CrewTrac (tap the Pay-Gross): ${sum.ctBad.join(", ")}` : ""].filter(Boolean).join("\n"))}">${c.ok === true && !sum.ctBad.length ? "&#10003;" : c.ok === null && !sum.ctBad.length ? this._esc(c.line.replace(/^CrewTrac /, "")) : `&#10007; ${sum.ctBad.length ? sum.ctBad.length + " trip" + (sum.ctBad.length > 1 ? "s" : "") : ""}${c.ok === false ? `${sum.ctBad.length ? ", " : ""}month ${this._esc(c.line.replace(/^.*off by /, "").replace(/ \(CrewTrac controls\)$/, ""))}` : ""}`}</span>` : ""; })()],
+          return c.line || sum.ctBad.length ? `<span class="${bad ? "bad" : "okc"}" title="${this._esc([c.line, sum.ctBad.length ? `Trips off CrewTrac (tap the Pay-Gross): ${sum.ctBad.join(", ")}` : ""].filter(Boolean).join("\n"))}">${c.ok === true && !sum.ctBad.length ? "&#10003;" : c.ok === null && !sum.ctBad.length ? this._esc(c.line.replace(/^CrewTrac /, "").replace(/\): .*$/, ")")) : `&#10007; ${sum.ctBad.length ? sum.ctBad.length + " trip" + (sum.ctBad.length > 1 ? "s" : "") : ""}${c.ok === false ? `${sum.ctBad.length ? ", " : ""}month ${this._esc(c.line.replace(/^.*off by /, "").replace(/ \(CrewTrac controls\)$/, ""))}` : ""}`}</span>` : ""; })()],
         ["Block", hm(sum.blk) + chk(sum.blk, fBlk)], ["Block Avail", `<span class="${bAv <= 0 ? "bad" : ""}" title="98:00 bid-month block cap (crew scheduling) minus FLICA's bid-period Block">${bAv < 0 ? "-" + hm(-bAv) : hm(bAv)}</span>`], ["Soft", hm(sum.soft)],
         ["Vacation", sum.vacDays ? `${hm(sum.vac)} <span class="k">(${sum.vacDays} d x ${hm(VAC_H)})</span>` : ""],
         // 1.7.20: pay with no credit (PWA 4.D.2.e LODO, the recall's extra 100%, 4.M.1.a): inside Pay-Gross, never in Credit
