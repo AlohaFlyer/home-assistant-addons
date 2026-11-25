@@ -72,8 +72,9 @@ import pilotpdf as PP
 import pilotdb as PDBM
 import pdbshare as PS
 import mirror as MR  # 1.8.0: the FLICA mirror (ingress page flica)
+import opendays as OD  # 1.8.4: the pot alerts' open days filter
 
-VERSION = "1.8.3"
+VERSION = "1.8.4"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -3384,6 +3385,32 @@ def _span(ev):
         except ValueError:
             e = s
     return s, e
+
+
+def pot_alert_hold(ev):
+    """1.8.4 (Ryan, Nov 25, 2026: open days Dec 3 to 11): '' when a new open time pot pairing may alert
+    (event/new_pairing), else why it is held (opendays.verdict). Only the admin instance reads the add-on option
+    pot_open_days (a pilot's Watcher alerts as before); an empty option holds nothing. A held pairing is still on the
+    pot, in the finds and through the rules; only its event/new_pairing (the pushes) is left out, with one log line."""
+    if not has("addon_config"):
+        return ""
+    spans, bad = OD.parse(OPTS.get("pot_open_days") or [])
+    if bad and not S.get("open_days_bad_logged"):
+        S["open_days_bad_logged"] = True
+        log.warning("pot_open_days: ignored %s (use YYYY-MM-DD..YYYY-MM-DD or YYYY-MM-DD)", ", ".join(bad))
+    s, e = _span(ev)
+    return OD.verdict(spans, s, e)
+
+
+def pot_alert(ev, what):
+    """Publish a new pot pairing's event/new_pairing unless pot_alert_hold holds it. True when published."""
+    why = pot_alert_hold(ev)
+    if why:
+        ev["open_days"] = why
+        log.info("%s %s %s: no alert (pot_open_days: %s)", what, ev.get("pairing") or "?", ev.get("start") or "", why)
+        return False
+    pub("event/new_pairing", ev, retain=False)
+    return True
 
 
 def _sched_items():
@@ -8598,7 +8625,7 @@ def close_in_check(fl, pot_all, full=False, moved_from=()):
                 time.sleep(random.uniform(1.5, 3.5))
                 enrich(fl, ev)
             log.info("NEW close-in pairing %s", ev)
-            pub("event/new_pairing", ev, retain=False)
+            pot_alert(ev, "close-in pairing")  # 1.8.4: the open days filter
             pub("last_new", ev)
             run_rules(CLOSE_IN_KEY, k, rows[k])
         for k in set(base) - set(pot) - set(regular):  # 1.8.2 (review R3): judged gone by this folder's good read
@@ -15460,7 +15487,7 @@ def check(fl):
                 if not ev.get("detail_url"):  # pot_details already read it when cached
                     enrich(fl, ev)
                 log.info("NEW pairing %s", ev)
-                pub("event/new_pairing", ev, retain=False)
+                pot_alert(ev, "pairing")  # 1.8.4: the open days filter
                 pub("last_new", ev)
                 run_rules(month, k, pot[k])
         if base is not None:

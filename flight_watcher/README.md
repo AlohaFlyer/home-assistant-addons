@@ -400,6 +400,20 @@ adds a month): the Pot month select chooses, and This month and Next month read 
 link that names no BCID) at most every 6 h a month, only while a month of the select is not found: none with This
 month once its pot reads, about 4 a day with Next month or Both until the next month's pot opens.
 
+## Pot alerts on open days only (1.8.4)
+
+The add-on option `pot_open_days` (Configuration tab) is a list of date ranges, `YYYY-MM-DD..YYYY-MM-DD` (both days
+included) or one day `YYYY-MM-DD`. Empty, the default, changes nothing. When set, a new open time pot pairing (regular
+pot or close-in folder) that starts in a calendar month a range touches alerts (event/new_pairing and every push built
+on it) only when it starts on an open day and is home by the last day of that open stretch; the others are held with
+one log line and stay on the pot, in the finds and through the rules. Months no range touches alert as before;
+tradeboard pickups are not filtered; only the admin's Watcher reads the option. Ryan's December 2026 (open Dec 3 to 11):
+
+```yaml
+pot_open_days:
+  - "2026-12-03..2026-12-11"
+```
+
 ## Schedule months kept fresh (1.8.2)
 
 Ryan's December stayed stale on Nov 23, 2026 (a 00:56 read caught FLICA's page just before a swap posted and the next

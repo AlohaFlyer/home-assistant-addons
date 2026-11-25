@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.8.4
+
+Open days for the pot alerts (Hark for Ryan, Nov 25, 2026: his open days in December 2026 are Dec 3 to 11).
+
+- New add-on option `pot_open_days`: a list of date ranges, each `YYYY-MM-DD..YYYY-MM-DD` (both days included) or a
+  single day `YYYY-MM-DD`. Empty (the default) changes nothing. For December 2026 Ryan would set one item,
+  `2026-12-03..2026-12-11`.
+- A new open time pot pairing (the regular pot and the close-in folder) that starts in a calendar month a range
+  touches alerts (event/new_pairing, so the "*** LAS 2-day H3619" push and the others built on it) only when it starts
+  on an open day and is home by the last day of that open stretch (ranges that touch or overlap are one stretch). A
+  pairing that starts on another day, or that would run past the last open day, is held: one log line ("pairing
+  H3914 10Dec: no alert (pot_open_days: runs to 2026-12-12, past the last open day 2026-12-11)"). A held pairing stays
+  on the pot sensor, in the finds and through the rules as before; only its alert is left out.
+- A month no range touches alerts as before, so a month not set up is never silenced. Tradeboard pickups are not
+  filtered. Only Ryan's Watcher (the admin instance) reads the option; a pilot's Watcher alerts as before. An item
+  that does not parse is ignored with one warning in the log.
+- December schedule (Ryan, Nov 23: "FW does not appear to be updating my schedule completely for December"; H3613
+  shown Dec 4 while CrewTrac had Dec 6 to 8): no new fault. The Dec 4 copy was a stale read after the 04DEC to
+  06DEC swap, fixed by 1.8.1 (the schedule stamp re-read) and 1.8.2 (a future month fresh for 30 min, early
+  re-reads, the bid month, December's carry-in rows). A regression test reads a December laid out like Ryan's
+  (trips Dec 6, 9 and 12, VAC Dec 18 to 24, carry-in rows Nov 30 and Dec 1) on its own days on both the mobile and the
+  Schedule Lookup page. No portal contract change; no new FLICA page or load.
+
 ## 1.8.3
 
 Pay follows FLICA's month credit (Ryan, Nov 24, 2026: "pay looks off").
