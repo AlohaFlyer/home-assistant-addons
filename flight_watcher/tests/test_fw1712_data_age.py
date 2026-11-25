@@ -660,7 +660,7 @@ def test_version_changelog_and_readme_say_data_age():
     # 1.7.13 to 1.7.20 went on top: the version itself is pinned in test_release_c_tickets; the 1.7.12 section stays
     # below them
     log = open(os.path.join(HERE, "CHANGELOG.md"), encoding="utf-8").read()
-    assert log.startswith("# Changelog\n\n## 1.8.2\n")  # 1.8.2 on top, the chain below it
+    assert log.startswith("# Changelog\n\n## 1.8.3\n")  # 1.8.3 on top, the chain below it
     for v in ("1.8.1", "1.8.0",
               "1.7.26", "1.7.25", "1.7.24", "1.7.23", "1.7.22", "1.7.21", "1.7.20", "1.7.19", "1.7.18",
               "1.7.17", "1.7.16", "1.7.15", "1.7.14", "1.7.13", "1.7.12", "1.7.11"):
