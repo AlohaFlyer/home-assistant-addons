@@ -167,8 +167,12 @@ const fwgWh = (T, w4, P) => {
   return Math.max(0, fwgR2(tax / 24));
 };
 // g: {date, gross, eligible (401(k) base), erBase (employer base), meal (non-taxable meal pay), supp}; ytd is updated
-const fwgCheck = (g, ytd, P) => {
+// 1.8.3 (Ryan, Nov 24): each tax year's limits. The pay model's own (from the stubs) hold for its tax_year; a check in a
+// later year uses that year's announced figures: SSA wage base (Oct 14 2026), IRS Notice 2026-66 (Nov 12 2026)
+const FWG_LIMITS = { 2026: { ss_base: 184500, cap_402g: 24500, cap_415c: 72000 }, 2027: { ss_base: 192300, cap_402g: 25500, cap_415c: 75000 } };
+const fwgCheck = (g, ytd, P0) => {
   const yr = +g.date.slice(0, 4);
+  const ty = +P0.tax_year || 0, P = !ty || yr === ty ? P0 : { ...P0, ...(FWG_LIMITS[yr] || {}) };  // no tax_year: P0 for every year
   if (ytd.year !== yr) Object.assign(ytd, { year: yr, ss_wages: 0, med_wages: 0, c415: P.c415_start || 0, ee401: 0 });
   const pre = (P.medical || 0) + (P.dental || 0);
   const room = Math.max(0, (P.cap_415c || 0) - ytd.c415);
@@ -2163,6 +2167,10 @@ class FlightWatcherScheduleCard extends HTMLElement {
       // such as SIM or SICK, no trip whose credit is not read, no trip from last month running into this one); else
       // p.unk: the PAYP's credit is unknown and the Credit check stays red
       const isP = (t) => /^[A-Z]\d{4}/.test(t || "");
+      // 1.8.3 (Ryan, Nov 24): the month's credited codes the card has no row price for (SIM, SICK, GDO, SCR...): FLICA's
+      // month credit holds them and HAL pays them, so the credit FLICA shows beyond what the card counts is priced at the
+      // month's rate (October 2026: card 47:05, FLICA 87:01, the stubs paid on about 87 h)
+      const codesIn = (mm) => [...new Set(((mm && mm.days) || []).filter(([d, t]) => inBp(d) && t && t !== "VAC" && t !== PAYP && !isP(t)).map(([, t]) => t))];
       const paypPlan = (mm, tr, other, flica) => {
         const out = [], its = ((mm && mm.items) || []).filter(Boolean), dys = (mm && mm.days) || [];
         for (const it of its) {
@@ -2316,7 +2324,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
       // month price of a version (same rules as the rows): Awarded-Pay-Gross and Improved-Pay-Gross
       // 1.7.2: a PAYP is priced as on the rows (paypPlan: the record's credit, else the estimate from the version's own
       // FLICA credit), so Awarded-Pay-Gross, Improved-Pay-Gross and a version's Pay-Gross count it too
-      const price = (mm, tr) => { let g = 0, other = 0;
+      const price = (mm, tr) => { let g = 0, other = 0, cut = 0;
         // FW-0080: the rows' rule (figs): each trip its part in this bid period, the trips carried in from no row too
         const one = (d, trip, lay) => {
           const ot0 = tr[`${trip}|${d}`] || {}; const pm = pkOf(d), pr = pm ? (pm[trip.slice(0, 5)] || {}) : {};
@@ -2325,7 +2333,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
           const sp = splitOf(d, trip, ot, cH, bH);
           if (!(sp ? sp.in : inBp(d))) return;
           const c = sp && !sp.whole ? (sp.cr == null ? null : sp.cr / 60) : cH, b = sp && !sp.whole ? (sp.bl == null ? null : sp.bl / 60) : bH;
-          other += c == null ? 0 : c;
+          other += c == null ? 0 : c; if (pa) cut += (pa.cut || 0) / 60;
           g += tripFull(c, b, nOf(pr, ot), lay, `${trip}|${d}`, ot.seat) || 0;
           if (pa) g += ((pa.lodoDays.filter(inBp).length * 4) + (pa.rclAll ? (c || 0) : pa.rcl / 60)) * RATE;  // 1.7.20: LODO, recall (pay only)
         };
@@ -2342,7 +2350,9 @@ class FlightWatcherScheduleCard extends HTMLElement {
           seen.add(k);
           if (splitOf(it.start, it.trip, tr[k] || {}, 0, 0)) one(it.start, it.trip, it.lay || "");
         }
-        for (const p of paypPlan(mm, tr, other, fl(((mm && mm.totals) || {}).credit))) if (p.h != null) g += tripFull(p.h, 0, "", "", p.it ? `${PAYP}|${p.row}` : p.k, "") || 0;
+        const fcr = fl(((mm && mm.totals) || {}).credit); let ph = 0, est = false;
+        for (const p of paypPlan(mm, tr, other, fcr)) if (p.unk) est = true; else if (p.h != null) { ph += p.h; est = est || !!p.est; g += tripFull(p.h, 0, "", "", p.it ? `${PAYP}|${p.row}` : p.k, "") || 0; }
+        if (fcr != null && !est && codesIn(mm).length) g += Math.max(0, fcr - other - ph - cut) * RATE;  // 1.8.3: other credit, as the totals
         return g; };
       const tripPay = {};
       // v51 (Ryan): swap / pick-up ideas. A swap may move off the trip's footprint onto any neighbouring day that is not
@@ -2516,7 +2526,11 @@ class FlightWatcherScheduleCard extends HTMLElement {
       // fix pass (PWA 4.R.1): a PAYP with a trip added over all its days has no row; FLICA's month credit holds it
       for (const p of ppl) if (!p.it && p.h != null) { const g0 = tripFull(p.h, 0, "", "", p.k, "") || 0; sum.cr += p.h; sum.payp += p.h; sum.gross += g0; sum.net += g0 * (1 - (fed + stt) / 100); sum.ppCov.push(p); }
       for (const p of ppl) if (p.unk) sum.ppUnk = p.why;
-      const fBlk = fl(tt.block), fCr = fl(tt.credit), crAll = sum.cr + sum.vac;
+      { const fc = fl(tt.credit), oc = codesIn(mon);  // 1.8.3: other credit (codesIn)
+        // never with a PAYP whose credit is unknown: FLICA's gap would hold it too, and the card does not guess it (1.7.2)
+        const xh = fc == null || !oc.length || sum.ppEst || sum.ppUnk ? 0 : fc - sum.cr - sum.vac - sum.cut;
+        if (xh > 1 / 120) { sum.oth = xh; sum.othCodes = oc; sum.gross += xh * RATE; sum.net += xh * RATE * (1 - (fed + stt) / 100); } }
+      const fBlk = fl(tt.block), fCr = fl(tt.credit), crAll = sum.cr + sum.vac + (sum.oth || 0);
       // 1.6.2 review: in the award-only view the figures checked against come from the award file, not FLICA
       const srcW = awd0 ? "award" : "FLICA", srcT = awd0 ? "the award file shows" : "FLICA shows";
       const chk = (mine, flica) => flica == null ? "" : Math.abs(mine - flica) < 1 / 60 ? ` <span class="okc" title="matches ${awd0 ? "the award file" : "FLICA"}">&#10003;</span>` : ` <span class="bad" title="${srcT} ${hm(flica)}">${srcW} ${hm(flica)}</span>`;
@@ -2607,6 +2621,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
       const tot = tgrp("thrs", [["Credit", hm(crAll) + cutT + (sum.ppEst ? ` <span class="k" title="${this._esc(`Not checked: the PAYP estimate is ${srcFl}'s month credit less everything else counted, so Credit matches it by construction.`)}">est</span>` : chk(crAll, fCr))], ["CrewTrac", !admin ? "" : (() => { const c = fwCtMonth(ctSnap, key, hm(crAll), Date.now()); const bad = c.ok === false || sum.ctBad.length > 0;
           return c.line || sum.ctBad.length ? `<span class="${bad ? "bad" : "okc"}" title="${this._esc([c.line, sum.ctBad.length ? `Trips off CrewTrac (tap the Pay-Gross): ${sum.ctBad.join(", ")}` : ""].filter(Boolean).join("\n"))}">${c.ok === true && !sum.ctBad.length ? "&#10003;" : c.ok === null && !sum.ctBad.length ? this._esc(c.line.replace(/^CrewTrac /, "").replace(/\): .*$/, ")")) : `&#10007; ${sum.ctBad.length ? sum.ctBad.length + " trip" + (sum.ctBad.length > 1 ? "s" : "") : ""}${c.ok === false ? `${sum.ctBad.length ? ", " : ""}month ${this._esc(c.line.replace(/^.*off by /, "").replace(/ \(CrewTrac controls\)$/, ""))}` : ""}`}</span>` : ""; })()],
         ["Block", hm(sum.blk) + chk(sum.blk, fBlk)], ["Block Avail", `<span class="${bAv <= 0 ? "bad" : ""}" title="98:00 bid-month block cap (crew scheduling) minus FLICA's bid-period Block">${bAv < 0 ? "-" + hm(-bAv) : hm(bAv)}</span>`], ["Soft", hm(sum.soft)],
+        ["Other", sum.oth ? `<span class="ppt" title="${this._esc(`${srcFl}'s month credit beyond the trips, vacation and PAYP the card counts: ${sum.othCodes.join(", ")}. Inside Credit, Pay-Gross, Pay-Net and the paychecks at $${RATE.toFixed(2)} an hour.`)}">${hm(sum.oth)} <span class="k">${this._esc(sum.othCodes.slice(0, 4).join(" "))}</span></span>` : ""],
         ["Vacation", sum.vacDays ? `${hm(sum.vac)} <span class="k">(${sum.vacDays} d x ${hm(VAC_H)})</span>` : ""],
         // 1.7.20: pay with no credit (PWA 4.D.2.e LODO, the recall's extra 100%, 4.M.1.a): inside Pay-Gross, never in Credit
         ["LODO", sum.lodo ? `<span class="ppt" title="${this._esc(`Loss of Day Off: 4:00 pay, no credit, per day off lost (PWA 4.D.2.e). Inside Pay-Gross and the paychecks, not in Credit.`)}">${hm(sum.lodo)} <span class="k">pay only</span></span>` : ""],

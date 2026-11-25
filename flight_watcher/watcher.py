@@ -73,7 +73,7 @@ import pilotdb as PDBM
 import pdbshare as PS
 import mirror as MR  # 1.8.0: the FLICA mirror (ingress page flica)
 
-VERSION = "1.8.2"
+VERSION = "1.8.3"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"

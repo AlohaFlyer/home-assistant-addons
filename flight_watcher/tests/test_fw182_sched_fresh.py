@@ -744,10 +744,10 @@ def test_the_button_is_not_on_the_portal_and_a_pilots_copy_uses_his_prefix():
 def test_version_changelog_readme_and_no_em_dash():
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     cfg = open(os.path.join(here, "config.yaml"), encoding="utf-8").read()
-    assert 'version: "1.8.2"' in cfg
-    assert 'VERSION = "1.8.2"' in open(os.path.join(here, "watcher.py"), encoding="utf-8").read()
+    assert 'version: "1.8.3"' in cfg  # 1.8.3 on top since Nov 24
+    assert 'VERSION = "1.8.3"' in open(os.path.join(here, "watcher.py"), encoding="utf-8").read()
     log = open(os.path.join(here, "CHANGELOG.md"), encoding="utf-8").read()
-    assert log.startswith("# Changelog\n\n## 1.8.2\n") and "\n## 1.8.1\n" in log
+    assert log.startswith("# Changelog\n\n## 1.8.3\n") and "\n## 1.8.2\n" in log and "\n## 1.8.1\n" in log
     top = log.split("\n## 1.8.1\n")[0]
     for word in ("00:56", "01:03", "01:15", "30 min", "24 h", "Check now", "CrewTrac", "refresh", "loads",
                  "Maybe we need to add a little refresh button"):

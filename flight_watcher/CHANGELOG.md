@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.8.3
+
+Pay follows FLICA's month credit (Ryan, Nov 24, 2026: "pay looks off").
+
+- What was wrong: a month's SIM, SICK, GDO, SCR and other credited codes have no row price, so their credit never
+  reached Pay-Gross, Pay-Net, Awarded/Improved-Pay-Gross or the Improved pay sensor. October 2026: the card counted
+  47:05 against FLICA's 87:01 and showed $14,573 gross, $10,857 net; the two checks paid $22,276 net (the Nov 20 stub's
+  eligible pay was $28,843). Only the 22nd's check estimate already added that credit.
+- Now, in a month that holds such codes, the credit FLICA shows beyond the trips, vacation and PAYP the card counts
+  (less a delayed leg FLICA counts twice) is priced at the month's rate and shown as "Other" in the totals, with its
+  codes. It is inside Credit (so the Credit check matches FLICA), Pay-Gross, Pay-Net, the paychecks and each version's
+  price. A month without such codes is unchanged: a gap there stays unpriced and red against FLICA.
+- The paycheck engine uses each tax year's limits: the pay model's own figures for its tax_year, and for 2027 the
+  announced Social Security wage base $192,300 (SSA, Oct 14 2026), 402(g) $25,500 and 415(c) $75,000 (IRS Notice
+  2026-66, Nov 12 2026). Withholding stays on the 2026 Pub 15-T tables until 2027's are loaded. The January drop in the
+  7th's check (December: $8,087, January: about $6,860) is real: Social Security and the 8% 401(k) start again with the
+  new year (2026's Social Security base and 402(g) were reached in the fall).
+
 ## 1.8.2
 
 Two parts, built Nov 23 for the move from November to December: (A) the open time pot follows the bid month (with
