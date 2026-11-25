@@ -655,11 +655,13 @@ def test_version_is_one_seven_two():
     # 1.8.2 (Nov 23): the open time pot follows the bid month, the Pot month select (off the portal), other months kept
     # fresh, early re-reads, the schedule refresh button (off the portal); no contract change
     # 1.8.3 (Nov 24): other credit (SIM, SICK...) priced from FLICA's month credit, 2027 tax limits; no contract change
-    assert _re.search(r'^version: "1\.8\.3"$', cfg, _re.M)
-    assert _re.search(r'^VERSION = "1\.8\.3"$', open(os.path.join(HERE, "watcher.py"), encoding="utf-8").read(), _re.M)
+    # 1.8.4 (Nov 25, Hark for Ryan): the pot_open_days option holds new pot pairing alerts off open days; no contract
+    # change
+    assert _re.search(r'^version: "1\.8\.4"$', cfg, _re.M)
+    assert _re.search(r'^VERSION = "1\.8\.4"$', open(os.path.join(HERE, "watcher.py"), encoding="utf-8").read(), _re.M)
     log = open(os.path.join(HERE, "CHANGELOG.md"), encoding="utf-8").read()
-    assert log.startswith("# Changelog\n\n## 1.8.3\n")  # 1.8.3 on top, the chain below it
-    for v in ("1.8.2", "1.8.1", "1.8.0",
+    assert log.startswith("# Changelog\n\n## 1.8.4\n")  # 1.8.4 on top, the chain below it
+    for v in ("1.8.3", "1.8.2", "1.8.1", "1.8.0",
               "1.7.26", "1.7.25", "1.7.24", "1.7.23", "1.7.22", "1.7.21", "1.7.20", "1.7.19", "1.7.18",
               "1.7.17", "1.7.16", "1.7.15", "1.7.14", "1.7.13", "1.7.12", "1.7.11", "1.7.10", "1.7.9", "1.7.8",
               "1.7.7", "1.7.6.1", "1.7.6", "1.7.5", "1.7.4", "1.7.3", "1.7.2", "1.7.1.1", "1.7.1", "1.7.0"):

@@ -361,7 +361,7 @@ def test_version_is_one_seven_ten():
     # 1.7.11 (FW-0075), then 1.7.12 to 1.7.20, went on top: the version itself is pinned in test_release_c_tickets;
     # the 1.7.10 section stays
     log = open(os.path.join(HERE, "CHANGELOG.md"), encoding="utf-8").read()
-    assert log.startswith("# Changelog\n\n## 1.8.3\n")  # 1.8.3 on top, the chain below it
+    assert log.startswith("# Changelog\n\n## 1.8.4\n")  # 1.8.4 on top, the chain below it
     for v in ("1.8.1", "1.8.0",
               "1.7.26", "1.7.25", "1.7.24", "1.7.23", "1.7.22", "1.7.21", "1.7.20", "1.7.19", "1.7.10",
               "1.7.9"):
